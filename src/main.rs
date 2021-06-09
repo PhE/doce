@@ -32,6 +32,7 @@ fn main() {
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_asset::<CheckerboardMaterial>()
+        .add_event::<ReplayEvent>()
         .add_event::<DebugMainCharacterFinalPositionEvent>()
         .insert_resource(Tick(0))
         .insert_resource(AmbientLight {
@@ -74,26 +75,19 @@ fn main() {
                 .with_system(game_camera_movement.system())
                 .with_system(game_save.exclusive_system()),
         )
-        // Replay
-        .add_system_set(
-            SystemSet::on_enter(AppState::Replay)
-                .with_system(game_setup.system())
-                .with_system(game_setup_ui.system())
-                .with_system(game_setup_main_character.system())
-                .with_system(game_setup_environment.system()),
-        )
         .add_system_set(
             SystemSet::on_update(AppState::Replay)
                 .with_system(game_main_character_input_replay.system())
                 .with_system(game_ui.system().after("character_input"))
                 .with_system(game_camera_movement.system()),
         )
-        .add_system_set(SystemSet::on_exit(AppState::Replay).with_system(replay_unpause.system()))
+        // PostUpdate
+        .add_system_to_stage(CoreStage::PostUpdate, game_increment_tick.system())
         // Last
-        .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
+        .add_system_to_stage(CoreStage::Last, game_replay.system().label("game_replay"))
         .add_system_to_stage(
             CoreStage::Last,
-            debug_main_character_final_position.system(),
+            debug_main_character_final_position.system().after("game_replay"),
         )
         .run();
 }
@@ -110,6 +104,8 @@ struct InitialEnvironment {
     boundaries: Vec<Boundary>,
     ball_template: BallTemplate,
 }
+
+struct InitialRigidBodyPosition(RigidBodyPosition);
 
 struct BallTemplate {
     mesh: Handle<Mesh>,
@@ -369,6 +365,7 @@ fn game_setup_main_character(
             ..Default::default()
         })
         .id();
+    let rigid_body_position = vector![0.0, 1.0, 0.0].into();
 
     commands
         .spawn()
@@ -392,17 +389,15 @@ fn game_setup_main_character(
         })
         .insert_bundle(RigidBodyBundle {
             body_type: RigidBodyType::KinematicVelocityBased,
-            position: RigidBodyPosition {
-                position: vector![0.0, 1.0, 0.0].into(),
-                ..Default::default()
-            },
+            position: rigid_body_position,
             ..Default::default()
         })
         .insert_bundle(ColliderBundle {
             shape: ColliderShape::capsule(point![0.0, -0.5, 0.0], point![0.0, 0.5, 0.0], 0.5),
             ..Default::default()
         })
-        .insert(RigidBodyPositionSync::Discrete);
+        .insert(RigidBodyPositionSync::Discrete)
+        .insert(InitialRigidBodyPosition(rigid_body_position.clone()));
 }
 
 fn game_setup_environment(
@@ -426,7 +421,7 @@ fn game_setup_environment(
             });
     }
 
-    for rigid_body_position in &initial_environment.ball_template.rigid_body_positions {
+    for &rigid_body_position in &initial_environment.ball_template.rigid_body_positions {
         commands
             .spawn_bundle(PbrBundle {
                 mesh: initial_environment.ball_template.mesh.clone(),
@@ -435,24 +430,25 @@ fn game_setup_environment(
             })
             .insert_bundle(RigidBodyBundle {
                 body_type: RigidBodyType::Dynamic,
-                position: rigid_body_position.clone(),
-                damping: initial_environment.ball_template.rigid_body_damping.clone(),
-                forces: initial_environment.ball_template.rigid_body_forces.clone(),
+                position: rigid_body_position,
+                damping: initial_environment.ball_template.rigid_body_damping,
+                forces: initial_environment.ball_template.rigid_body_forces,
                 ..Default::default()
             })
             .insert_bundle(ColliderBundle {
                 shape: initial_environment.ball_template.collider_shape.clone(),
-                material: initial_environment.ball_template.collider_material.clone(),
+                material: initial_environment.ball_template.collider_material,
                 ..Default::default()
             })
-            .insert(RigidBodyPositionSync::Discrete);
+            .insert(RigidBodyPositionSync::Discrete)
+            .insert(InitialRigidBodyPosition(rigid_body_position));
     }
 }
 
 fn game_ui(
     mut app_state: ResMut<State<AppState>>,
     mut game_replay: ResMut<GameReplay>,
-    mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>,
+    mut replay_events: EventWriter<ReplayEvent>,
     query: Query<(&Interaction, &ButtonType), (Changed<Interaction>, With<Button>)>,
 ) {
     for (interaction, button_type) in query.iter() {
@@ -467,15 +463,7 @@ fn game_ui(
                             .unwrap();
                     }
                     ButtonType::Replay => {
-                        game_replay.main_character_inputs_index = 0;
-
-                        if *app_state.current() == AppState::InGame {
-                            debug_events.send(DebugMainCharacterFinalPositionEvent::Record);
-                        }
-
-                        app_state
-                            .set(AppState::Cleanup(Box::new(AppState::Replay)))
-                            .unwrap();
+                        replay_events.send(ReplayEvent);
                     }
                     _ => (),
                 };
@@ -658,8 +646,38 @@ fn game_increment_tick(
     }
 }
 
-fn replay_unpause(mut config: ResMut<RapierConfiguration>) {
-    config.physics_pipeline_active = true;
+struct ReplayEvent;
+
+fn game_replay(
+    mut app_state: ResMut<State<AppState>>,
+    mut tick: ResMut<Tick>,
+    mut game_replay: ResMut<GameReplay>,
+    mut rapier_config: ResMut<RapierConfiguration>,
+    mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>,
+    mut replay_events: EventReader<ReplayEvent>,
+    mut query: Query<(
+        &mut RigidBodyPosition,
+        &mut RigidBodyVelocity,
+        &InitialRigidBodyPosition,
+    )>,
+) {
+    for _replay_event in replay_events.iter() {
+        if *app_state.current() == AppState::InGame {
+            app_state.set(AppState::Replay).unwrap();
+            debug_events.send(DebugMainCharacterFinalPositionEvent::Record);
+        }
+
+        tick.0 = 0;
+
+        game_replay.main_character_inputs_index = 0;
+
+        rapier_config.physics_pipeline_active = true;
+
+        for (mut position, mut velocity, initial_position) in query.iter_mut() {
+            *position = initial_position.0;
+            *velocity = RigidBodyVelocity::zero();
+        }
+    }
 }
 
 enum DebugMainCharacterFinalPositionEvent {
