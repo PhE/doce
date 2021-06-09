@@ -14,6 +14,17 @@ use bevy::{
 };
 use bevy_rapier3d::{physics::TimestepMode, prelude::*};
 
+mod main_menu;
+mod resources;
+mod ui;
+
+use main_menu::MainMenuPlugin;
+use resources::CheckerboardMaterial;
+use resources::InitResourcesPlugin;
+use resources::ShaderResources;
+use resources::UIResources;
+use ui::UIPlugin;
+
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
@@ -22,7 +33,6 @@ fn main() {
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_asset::<CheckerboardMaterial>()
         .add_event::<DebugMainCharacterFinalPositionEvent>()
-        .init_resource::<UiMaterials>()
         .insert_resource(Tick(0))
         .insert_resource(AmbientLight {
             color: Color::WHITE,
@@ -35,16 +45,15 @@ fn main() {
             main_character_final_position: Vec3::ZERO,
         })
         .add_state(AppState::MainMenu)
+        .add_plugin(InitResourcesPlugin)
         .add_startup_system(setup.system())
+        .add_plugin(UIPlugin)
         // First
         .add_system_to_stage(CoreStage::First, cleanup.system())
         // PreUpdate
         .add_system_to_stage(CoreStage::PreUpdate, game_main_character_movement.system())
         // Update
-        // Main Menu
-        .add_system_set(SystemSet::on_enter(AppState::MainMenu).with_system(menu_setup.system()))
-        .add_system_set(SystemSet::on_update(AppState::MainMenu).with_system(menu_update.system()))
-        .add_system_set(SystemSet::on_exit(AppState::MainMenu).with_system(menu_cleanup.system()))
+        .add_plugin(MainMenuPlugin)
         // In-game
         .add_system_set(
             SystemSet::on_enter(AppState::InGame)
@@ -65,7 +74,6 @@ fn main() {
                 .with_system(game_camera_movement.system())
                 .with_system(game_save.exclusive_system()),
         )
-        .add_system_set(SystemSet::on_exit(AppState::InGame).with_system(game_cleanup.system()))
         // Replay
         .add_system_set(
             SystemSet::on_enter(AppState::Replay)
@@ -80,11 +88,7 @@ fn main() {
                 .with_system(game_ui.system().after("character_input"))
                 .with_system(game_camera_movement.system()),
         )
-        .add_system_set(
-            SystemSet::on_exit(AppState::Replay)
-                .with_system(game_cleanup.system())
-                .with_system(unpause_replay.system()),
-        )
+        .add_system_set(SystemSet::on_exit(AppState::Replay).with_system(replay_unpause.system()))
         // Last
         .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
         .add_system_to_stage(
@@ -92,13 +96,6 @@ fn main() {
             debug_main_character_final_position.system(),
         )
         .run();
-}
-
-#[derive(RenderResources, Default, TypeUuid)]
-#[uuid = "c16c38f6-53fe-499c-832f-acc879f36454"]
-struct CheckerboardMaterial {
-    first_color: Color,
-    second_color: Color,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Hash)]
@@ -109,9 +106,26 @@ enum AppState {
     Replay,
 }
 
-struct AppData {
-    checkerboard_material: Handle<CheckerboardMaterial>,
-    checkerboard_render_pipelines: RenderPipelines,
+struct InitialEnvironment {
+    boundaries: Vec<Boundary>,
+    ball_template: BallTemplate,
+}
+
+struct BallTemplate {
+    mesh: Handle<Mesh>,
+    mesh_material: Handle<StandardMaterial>,
+    rigid_body_positions: Vec<RigidBodyPosition>,
+    rigid_body_damping: RigidBodyDamping,
+    rigid_body_forces: RigidBodyForces,
+    collider_shape: SharedShape,
+    collider_material: ColliderMaterial,
+}
+
+struct Boundary {
+    mesh: Handle<Mesh>,
+    mesh_transform: Transform,
+    collider_shape: SharedShape,
+    collider_position: ColliderPosition,
 }
 
 #[derive(Clone, Copy)]
@@ -133,175 +147,82 @@ fn cleanup(mut commands: Commands, mut app_state: ResMut<State<AppState>>, query
 
 fn setup(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut materials: ResMut<Assets<CheckerboardMaterial>>,
-    mut pipelines: ResMut<Assets<PipelineDescriptor>>,
-    mut render_graph: ResMut<RenderGraph>,
     mut rapier_config: ResMut<RapierConfiguration>,
+    asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     asset_server.watch_for_changes().unwrap();
 
     rapier_config.timestep_mode = TimestepMode::FixedTimestep;
 
-    let vertex = asset_server.load("shaders/checkerboard.vert");
-    let fragment = Some(asset_server.load("shaders/checkerboard.frag"));
+    let transforms = vec![
+        // Floor
+        Transform::identity(),
+        // Ceiling
+        Transform::from_xyz(0.0, 20.0, 0.0).looking_at(Vec3::new(0.0, 20.0, 1.0), -Vec3::Y),
+        // Wall X-
+        Transform::from_xyz(-10.0, 10.0, 0.0).looking_at(Vec3::new(-10.0, 20.0, 0.0), Vec3::X),
+        // Wall X+
+        Transform::from_xyz(10.0, 10.0, 0.0).looking_at(Vec3::new(10.0, 20.0, 0.0), -Vec3::X),
+        // Wall Z-
+        Transform::from_xyz(0.0, 10.0, -10.0).looking_at(Vec3::new(0.0, 20.0, -10.0), Vec3::Z),
+        // Wall Z+
+        Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::new(0.0, 20.0, 10.0), -Vec3::Z),
+    ];
 
-    let pipeline_handle = pipelines.add(PipelineDescriptor::default_config(ShaderStages {
-        vertex,
-        fragment,
-    }));
-    let checkerboard_render_pipelines =
-        RenderPipelines::from_pipelines(vec![RenderPipeline::new(pipeline_handle)]);
+    let plane = meshes.add(Mesh::from(shape::Plane { size: 20.0 }));
 
-    render_graph.add_system_node(
-        "checkerboard_material",
-        AssetRenderResourcesNode::<CheckerboardMaterial>::new(true),
-    );
-    render_graph
-        .add_node_edge("checkerboard_material", base::node::MAIN_PASS)
-        .unwrap();
-
-    let checkerboard_material = materials.add(CheckerboardMaterial {
-        first_color: Color::GRAY,
-        second_color: Color::WHITE,
-    });
-
-    commands.insert_resource(AppData {
-        checkerboard_material,
-        checkerboard_render_pipelines,
-    });
-}
-
-fn menu_setup(
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    ui_materials: Res<UiMaterials>,
-) {
-    commands.spawn_bundle(UiCameraBundle::default());
-
-    let button_bundle = ButtonBundle {
-        style: Style {
-            size: Size::new(Val::Px(200.0), Val::Px(60.0)),
-            margin: Rect::all(Val::Px(10.0)),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..Default::default()
-        },
-        material: ui_materials.white.clone(),
-        ..Default::default()
-    };
-    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
-
-    commands
-        .spawn_bundle(NodeBundle {
-            style: Style {
-                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
-                flex_direction: FlexDirection::ColumnReverse,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..Default::default()
-            },
-            material: ui_materials.transparent.clone(),
-            ..Default::default()
+    let boundaries = transforms
+        .into_iter()
+        .map(|transform| Boundary {
+            mesh: plane.clone(),
+            mesh_transform: transform,
+            collider_shape: ColliderShape::halfspace(UnitVector::new_unchecked(
+                transform.local_y().into(),
+            )),
+            collider_position: transform.translation.into(),
         })
-        .insert(UiRoot)
-        .with_children(|parent| {
-            parent
-                .spawn_bundle(button_bundle.clone())
-                .insert(ButtonType::Play)
-                .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
-                            "Play",
-                            TextStyle {
-                                font: font.clone(),
-                                font_size: 40.0,
-                                color: Color::BLACK,
-                            },
-                            Default::default(),
-                        ),
-                        ..Default::default()
-                    });
-                });
+        .collect();
 
-            parent
-                .spawn_bundle(button_bundle.clone())
-                .insert(ButtonType::Quit)
-                .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
-                            "Quit",
-                            TextStyle {
-                                font: font.clone(),
-                                font_size: 40.0,
-                                color: Color::BLACK,
-                            },
-                            Default::default(),
-                        ),
-                        ..Default::default()
-                    });
-                });
-        });
-}
+    let mut rigid_body_positions = Vec::new();
 
-fn menu_update(
-    mut state: ResMut<State<AppState>>,
-    ui_materials: Res<UiMaterials>,
-    mut app_exit_events: EventWriter<AppExit>,
-    mut button_query: Query<
-        (
-            &Interaction,
-            &ButtonType,
-            &Children,
-            &mut Handle<ColorMaterial>,
-        ),
-        (Changed<Interaction>, With<Button>),
-    >,
-    mut text_query: Query<&mut Text>,
-) {
-    for (interaction, button_type, children, mut material) in button_query.iter_mut() {
-        match interaction {
-            Interaction::Clicked => {
-                match button_type {
-                    ButtonType::Play => state.set(AppState::InGame).unwrap(),
-                    ButtonType::Quit => app_exit_events.send(AppExit),
-                    _ => (),
-                };
-            }
-            Interaction::Hovered => {
-                *material = ui_materials.black.clone();
-
-                for &child in children.iter() {
-                    if let Ok(mut text) = text_query.get_mut(child) {
-                        text.sections[0].style.color = Color::WHITE;
-                    }
-                }
-            }
-            Interaction::None => {
-                *material = ui_materials.white.clone();
-
-                for &child in children.iter() {
-                    if let Ok(mut text) = text_query.get_mut(child) {
-                        text.sections[0].style.color = Color::BLACK;
-                    }
-                }
+    for i in -9..=9 {
+        for j in -9..=9 {
+            for k in 0..2 {
+                rigid_body_positions.push(vector![i as f32, 4.0 + k as f32, j as f32].into());
             }
         }
     }
+
+    commands.insert_resource(InitialEnvironment {
+        boundaries,
+        ball_template: BallTemplate {
+            mesh: meshes.add(Mesh::from(shape::Icosphere {
+                radius: 0.5,
+                ..Default::default()
+            })),
+            mesh_material: materials.add(Color::CYAN.into()),
+            rigid_body_damping: RigidBodyDamping {
+                linear_damping: 0.8,
+                angular_damping: 0.8,
+            },
+            rigid_body_forces: RigidBodyForces {
+                gravity_scale: 0.2,
+                ..Default::default()
+            },
+            rigid_body_positions,
+            collider_shape: ColliderShape::ball(0.5),
+            collider_material: ColliderMaterial {
+                friction: 0.8,
+                restitution: 0.8,
+                ..Default::default()
+            },
+        },
+    });
 }
 
-fn menu_cleanup(mut commands: Commands, query: Query<Entity>) {
-    for entity in query.iter() {
-        commands.entity(entity).despawn_recursive();
-    }
-}
-
-fn game_setup(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    mut tick: ResMut<Tick>,
-) {
+fn game_setup(mut commands: Commands, mut tick: ResMut<Tick>) {
     tick.0 = 0;
 
     commands.spawn_bundle(LightBundle {
@@ -313,59 +234,9 @@ fn game_setup(
         transform: Transform::from_xyz(0.0, 200.0, 400.0),
         ..Default::default()
     });
-
-    let sphere = meshes.add(Mesh::from(shape::Icosphere {
-        radius: 0.5,
-        ..Default::default()
-    }));
-    let sphere_material = materials.add(Color::CYAN.into());
-    let sphere_shape = ColliderShape::ball(0.5);
-
-    for i in -9..=9 {
-        for j in -9..=9 {
-            for k in 0..1 {
-                commands
-                    .spawn_bundle(PbrBundle {
-                        mesh: sphere.clone(),
-                        material: sphere_material.clone(),
-                        ..Default::default()
-                    })
-                    .insert_bundle(RigidBodyBundle {
-                        body_type: RigidBodyType::Dynamic,
-                        position: RigidBodyPosition {
-                            position: vector![i as f32, 4.0 + k as f32, j as f32].into(),
-                            ..Default::default()
-                        },
-                        damping: RigidBodyDamping {
-                            linear_damping: 0.8,
-                            angular_damping: 0.8,
-                        },
-                        forces: RigidBodyForces {
-                            gravity_scale: 0.2,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .insert_bundle(ColliderBundle {
-                        shape: sphere_shape.clone(),
-                        material: ColliderMaterial {
-                            friction: 0.8,
-                            restitution: 0.8,
-                            ..Default::default()
-                        },
-                        ..Default::default()
-                    })
-                    .insert(RigidBodyPositionSync::Discrete);
-            }
-        }
-    }
 }
 
-fn game_setup_ui(
-    mut commands: Commands,
-    ui_materials: Res<UiMaterials>,
-    asset_server: Res<AssetServer>,
-) {
+fn game_setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
     let button_bundle = ButtonBundle {
         style: Style {
             margin: Rect::all(Val::Px(5.0)),
@@ -373,10 +244,8 @@ fn game_setup_ui(
             align_items: AlignItems::Center,
             ..Default::default()
         },
-        material: ui_materials.white.clone(),
         ..Default::default()
     };
-    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
 
     commands.spawn_bundle(UiCameraBundle::default());
 
@@ -389,10 +258,27 @@ fn game_setup_ui(
                 align_items: AlignItems::FlexStart,
                 ..Default::default()
             },
-            material: ui_materials.transparent.clone(),
+            material: ui_resources.transparent.clone(),
             ..Default::default()
         })
         .with_children(|parent| {
+            parent.spawn_bundle(TextBundle {
+                style: Style {
+                    margin: Rect::all(Val::Px(5.0)),
+                    ..Default::default()
+                },
+                text: Text::with_section(
+                    "Controls: WASD",
+                    TextStyle {
+                        font: ui_resources.font.clone(),
+                        font_size: 24.0,
+                        color: Color::GREEN,
+                    },
+                    Default::default(),
+                ),
+                ..Default::default()
+            });
+
             parent
                 .spawn_bundle(TextBundle {
                     style: Style {
@@ -404,7 +290,7 @@ fn game_setup_ui(
                             TextSection {
                                 value: String::from("Tick: "),
                                 style: TextStyle {
-                                    font: font.clone(),
+                                    font: ui_resources.font.clone(),
                                     font_size: 24.0,
                                     color: Color::GREEN,
                                 },
@@ -413,7 +299,7 @@ fn game_setup_ui(
                             TextSection {
                                 value: String::new(),
                                 style: TextStyle {
-                                    font: font.clone(),
+                                    font: ui_resources.font.clone(),
                                     font_size: 24.0,
                                     color: Color::GREEN,
                                 },
@@ -438,7 +324,7 @@ fn game_setup_ui(
                         text: Text::with_section(
                             "Restart Game",
                             TextStyle {
-                                font: font.clone(),
+                                font: ui_resources.font.clone(),
                                 font_size: 24.0,
                                 color: Color::BLACK,
                             },
@@ -460,7 +346,7 @@ fn game_setup_ui(
                         text: Text::with_section(
                             "Replay",
                             TextStyle {
-                                font: font.clone(),
+                                font: ui_resources.font.clone(),
                                 font_size: 24.0,
                                 color: Color::BLACK,
                             },
@@ -521,42 +407,45 @@ fn game_setup_main_character(
 
 fn game_setup_environment(
     mut commands: Commands,
-    app_data: Res<AppData>,
-    mut meshes: ResMut<Assets<Mesh>>,
+    initial_environment: Res<InitialEnvironment>,
+    shader_resources: Res<ShaderResources>,
 ) {
-    let transforms = vec![
-        // Floor
-        Transform::identity(),
-        // Ceiling
-        Transform::from_xyz(0.0, 20.0, 0.0).looking_at(Vec3::new(0.0, 20.0, 1.0), -Vec3::Y),
-        // Wall X-
-        Transform::from_xyz(-10.0, 10.0, 0.0).looking_at(Vec3::new(-10.0, 20.0, 0.0), Vec3::X),
-        // Wall X+
-        Transform::from_xyz(10.0, 10.0, 0.0).looking_at(Vec3::new(10.0, 20.0, 0.0), -Vec3::X),
-        // Wall Z-
-        Transform::from_xyz(0.0, 10.0, -10.0).looking_at(Vec3::new(0.0, 20.0, -10.0), Vec3::Z),
-        // Wall Z+
-        Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::new(0.0, 20.0, 10.0), -Vec3::Z),
-    ];
-
-    let plane = meshes.add(Mesh::from(shape::Plane { size: 20.0 }));
-
-    for transform in transforms {
+    for boundary in &initial_environment.boundaries {
         commands
             .spawn_bundle(MeshBundle {
-                mesh: plane.clone(),
-                render_pipelines: app_data.checkerboard_render_pipelines.clone(),
-                transform,
+                mesh: boundary.mesh.clone(),
+                render_pipelines: shader_resources.checkerboard_render_pipelines.clone(),
+                transform: boundary.mesh_transform,
                 ..Default::default()
             })
-            .insert(app_data.checkerboard_material.clone())
+            .insert(shader_resources.checkerboard_material.clone())
             .insert_bundle(ColliderBundle {
-                shape: ColliderShape::halfspace(UnitVector::new_unchecked(
-                    transform.local_y().into(),
-                )),
-                position: transform.translation.into(),
+                shape: boundary.collider_shape.clone(),
+                position: boundary.collider_position,
                 ..Default::default()
             });
+    }
+
+    for rigid_body_position in &initial_environment.ball_template.rigid_body_positions {
+        commands
+            .spawn_bundle(PbrBundle {
+                mesh: initial_environment.ball_template.mesh.clone(),
+                material: initial_environment.ball_template.mesh_material.clone(),
+                ..Default::default()
+            })
+            .insert_bundle(RigidBodyBundle {
+                body_type: RigidBodyType::Dynamic,
+                position: rigid_body_position.clone(),
+                damping: initial_environment.ball_template.rigid_body_damping.clone(),
+                forces: initial_environment.ball_template.rigid_body_forces.clone(),
+                ..Default::default()
+            })
+            .insert_bundle(ColliderBundle {
+                shape: initial_environment.ball_template.collider_shape.clone(),
+                material: initial_environment.ball_template.collider_material.clone(),
+                ..Default::default()
+            })
+            .insert(RigidBodyPositionSync::Discrete);
     }
 }
 
@@ -769,9 +658,7 @@ fn game_increment_tick(
     }
 }
 
-fn game_cleanup() {}
-
-fn unpause_replay(mut config: ResMut<RapierConfiguration>) {
+fn replay_unpause(mut config: ResMut<RapierConfiguration>) {
     config.physics_pipeline_active = true;
 }
 
@@ -842,24 +729,4 @@ enum ButtonType {
     Quit,
     RestartGame,
     Replay,
-}
-
-struct UiRoot;
-
-struct UiMaterials {
-    transparent: Handle<ColorMaterial>,
-    white: Handle<ColorMaterial>,
-    black: Handle<ColorMaterial>,
-}
-
-impl FromWorld for UiMaterials {
-    fn from_world(world: &mut World) -> Self {
-        let mut materials = world.get_resource_mut::<Assets<ColorMaterial>>().unwrap();
-
-        Self {
-            transparent: materials.add(Color::NONE.into()),
-            white: materials.add(Color::WHITE.into()),
-            black: materials.add(Color::BLACK.into()),
-        }
-    }
 }
