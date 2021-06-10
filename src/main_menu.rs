@@ -81,15 +81,17 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
 fn menu_update(
     mut state: ResMut<State<AppState>>,
     mut app_exit_events: EventWriter<AppExit>,
+    mut cleanup_config: ResMut<CleanupConfig>,
     mut button_query: Query<(&Interaction, &ButtonType), (Changed<Interaction>, With<Button>)>,
 ) {
     for (interaction, button_type) in button_query.iter_mut() {
         match interaction {
             Interaction::Clicked => {
                 match button_type {
-                    ButtonType::Play => state
-                        .set(AppState::Cleanup(Box::new(AppState::InGame)))
-                        .unwrap(),
+                    ButtonType::Play => {
+                        cleanup_config.next_state_after_cleanup = Some(AppState::InGame);
+                        state.set(AppState::Cleanup).unwrap();
+                    }
                     ButtonType::Quit => app_exit_events.send(AppExit),
                     _ => (),
                 };

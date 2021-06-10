@@ -14,11 +14,15 @@ use bevy::{
 };
 use bevy_rapier3d::{physics::TimestepMode, prelude::*};
 
+mod app_state;
+mod cleanup;
 mod main_menu;
 mod physics;
 mod resources;
 mod ui;
 
+use app_state::{AppState, InitAppStatePlugin};
+use cleanup::{CleanupConfig, CleanupPlugin};
 use main_menu::MainMenuPlugin;
 use physics::PhysicsPlugin;
 use resources::CheckerboardMaterial;
@@ -37,22 +41,19 @@ fn main() {
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_asset::<CheckerboardMaterial>()
-        .add_event::<ReplayEvent>()
         .add_event::<DebugMainCharacterFinalPositionEvent>()
-        .add_state(AppState::MainMenu)
+        .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
-        .add_startup_system(setup.system())
-        .add_plugin(UIPlugin)
-        // First
-        .add_system_to_stage(CoreStage::First, cleanup.system())
-        // PreUpdate
-        .add_system_to_stage(CoreStage::PreUpdate, game_main_character_movement.system())
-        // Update
+        .add_plugin(CleanupPlugin)
         .add_plugin(MainMenuPlugin)
+        .add_plugin(UIPlugin)
+        .add_startup_system(setup.system())
+        // Update
         // In-game
         .add_system_set(
             SystemSet::on_enter(AppState::InGame)
                 .with_system(game_setup.system())
+                .with_system(game_setup_replay.system())
                 .with_system(game_setup_ui.system())
                 .with_system(game_setup_main_character.system())
                 .with_system(game_setup_environment.system()),
@@ -66,37 +67,47 @@ fn main() {
                         .after("character_input"),
                 )
                 .with_system(game_ui.system().after("character_input"))
-                .with_system(game_main_character_movement.system())
+                .with_system(
+                    game_main_character_movement
+                        .system()
+                        .after("character_input"),
+                )
                 .with_system(game_camera_movement.system())
                 .with_system(game_save.exclusive_system()),
         )
+        .add_system_set(SystemSet::on_exit(AppState::InGame).with_system(game_cleanup.system()))
         // Replay
         .add_system_set(
+            SystemSet::on_enter(AppState::Replay)
+                .with_system(replay_setup.system())
+                .with_system(game_setup.system())
+                .with_system(game_setup_ui.system())
+                .with_system(game_setup_main_character.system())
+                .with_system(game_setup_environment.system()),
+        )
+        .add_system_set(
             SystemSet::on_update(AppState::Replay)
-                .with_system(game_main_character_input_replay.system())
+                .with_system(
+                    game_main_character_input_replay
+                        .system()
+                        .label("character_input"),
+                )
                 .with_system(game_ui.system().after("character_input"))
-                .with_system(game_main_character_movement.system())
+                .with_system(
+                    game_main_character_movement
+                        .system()
+                        .after("character_input"),
+                )
                 .with_system(game_camera_movement.system()),
         )
         // PostUpdate
         .add_system_to_stage(CoreStage::PostUpdate, game_increment_tick.system())
         // Last
-        .add_system_to_stage(CoreStage::Last, game_replay.system().label("game_replay"))
         .add_system_to_stage(
             CoreStage::Last,
-            debug_main_character_final_position
-                .system()
-                .after("game_replay"),
+            debug_main_character_final_position.system(),
         )
         .run();
-}
-
-#[derive(Debug, Clone, Eq, PartialEq, Hash)]
-enum AppState {
-    MainMenu,
-    InGame,
-    Cleanup(Box<AppState>),
-    Replay,
 }
 
 struct InitialEnvironment {
@@ -124,18 +135,6 @@ struct Boundary {
 }
 
 struct TickText;
-
-fn cleanup(mut commands: Commands, mut app_state: ResMut<State<AppState>>, query: Query<Entity>) {
-    if let AppState::Cleanup(next_state) = app_state.current() {
-        for entity in query.iter() {
-            commands.entity(entity).despawn_recursive();
-        }
-
-        let next_state = next_state.clone();
-
-        app_state.set(*next_state).unwrap();
-    }
-}
 
 fn setup(
     mut commands: Commands,
@@ -214,8 +213,14 @@ fn setup(
     });
 }
 
-fn game_setup(mut commands: Commands, mut tick: ResMut<Tick>) {
+fn game_setup(
+    mut commands: Commands,
+    mut tick: ResMut<Tick>,
+    mut rapier_config: ResMut<RapierConfiguration>,
+) {
     tick.0 = 0;
+
+    rapier_config.physics_pipeline_active = true;
 
     commands.spawn_bundle(LightBundle {
         light: Light {
@@ -226,6 +231,10 @@ fn game_setup(mut commands: Commands, mut tick: ResMut<Tick>) {
         transform: Transform::from_xyz(0.0, 200.0, 400.0),
         ..Default::default()
     });
+}
+
+fn game_setup_replay(mut game_replay: ResMut<GameReplay>) {
+    game_replay.main_character_inputs.clear();
 }
 
 fn game_setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
@@ -443,8 +452,7 @@ fn game_setup_environment(
 
 fn game_ui(
     mut app_state: ResMut<State<AppState>>,
-    mut game_replay: ResMut<GameReplay>,
-    mut replay_events: EventWriter<ReplayEvent>,
+    mut cleanup_config: ResMut<CleanupConfig>,
     query: Query<(&Interaction, &ButtonType), (Changed<Interaction>, With<Button>)>,
 ) {
     for (interaction, button_type) in query.iter() {
@@ -452,14 +460,12 @@ fn game_ui(
             Interaction::Clicked => {
                 match button_type {
                     ButtonType::RestartGame => {
-                        game_replay.main_character_inputs.clear();
-
-                        app_state
-                            .set(AppState::Cleanup(Box::new(AppState::InGame)))
-                            .unwrap();
+                        cleanup_config.next_state_after_cleanup = Some(AppState::InGame);
+                        app_state.set(AppState::Cleanup).unwrap();
                     }
                     ButtonType::Replay => {
-                        replay_events.send(ReplayEvent);
+                        cleanup_config.next_state_after_cleanup = Some(AppState::Replay);
+                        app_state.set(AppState::Cleanup).unwrap();
                     }
                     _ => (),
                 };
@@ -626,6 +632,10 @@ fn game_save(world: &mut World) {
     }
 }
 
+fn game_cleanup(mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>) {
+    debug_events.send(DebugMainCharacterFinalPositionEvent::Record);
+}
+
 fn game_increment_tick(
     rapier_config: Res<RapierConfiguration>,
     mut tick: ResMut<Tick>,
@@ -642,38 +652,10 @@ fn game_increment_tick(
     }
 }
 
-struct ReplayEvent;
+fn replay_setup(mut tick: ResMut<Tick>, mut game_replay: ResMut<GameReplay>) {
+    tick.0 = 0;
 
-fn game_replay(
-    mut app_state: ResMut<State<AppState>>,
-    mut tick: ResMut<Tick>,
-    mut game_replay: ResMut<GameReplay>,
-    mut rapier_config: ResMut<RapierConfiguration>,
-    mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>,
-    mut replay_events: EventReader<ReplayEvent>,
-    mut query: Query<(
-        &mut RigidBodyPosition,
-        &mut RigidBodyVelocity,
-        &InitialRigidBodyPosition,
-    )>,
-) {
-    for _replay_event in replay_events.iter() {
-        if *app_state.current() == AppState::InGame {
-            app_state.set(AppState::Replay).unwrap();
-            debug_events.send(DebugMainCharacterFinalPositionEvent::Record);
-        }
-
-        tick.0 = 0;
-
-        game_replay.main_character_inputs_index = 0;
-
-        rapier_config.physics_pipeline_active = true;
-
-        for (mut position, mut velocity, initial_position) in query.iter_mut() {
-            *position = initial_position.0;
-            *velocity = RigidBodyVelocity::zero();
-        }
-    }
+    game_replay.main_character_inputs_index = 0;
 }
 
 enum DebugMainCharacterFinalPositionEvent {
