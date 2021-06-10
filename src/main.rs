@@ -15,36 +15,30 @@ use bevy::{
 use bevy_rapier3d::{physics::TimestepMode, prelude::*};
 
 mod main_menu;
+mod physics;
 mod resources;
 mod ui;
 
 use main_menu::MainMenuPlugin;
+use physics::PhysicsPlugin;
 use resources::CheckerboardMaterial;
+use resources::GameReplay;
 use resources::InitResourcesPlugin;
+use resources::MainCharacterInput;
 use resources::ShaderResources;
+use resources::Tick;
 use resources::UIResources;
 use ui::UIPlugin;
 
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
-        .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
+        .add_plugin(PhysicsPlugin::<NoUserData>::default())
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_asset::<CheckerboardMaterial>()
         .add_event::<ReplayEvent>()
         .add_event::<DebugMainCharacterFinalPositionEvent>()
-        .insert_resource(Tick(0))
-        .insert_resource(AmbientLight {
-            color: Color::WHITE,
-            brightness: 0.1,
-        })
-        .insert_resource(GameReplay {
-            tick: Tick(0),
-            main_character_inputs: Vec::with_capacity(1024),
-            main_character_inputs_index: 0,
-            main_character_final_position: Vec3::ZERO,
-        })
         .add_state(AppState::MainMenu)
         .add_plugin(InitResourcesPlugin)
         .add_startup_system(setup.system())
@@ -72,13 +66,16 @@ fn main() {
                         .after("character_input"),
                 )
                 .with_system(game_ui.system().after("character_input"))
+                .with_system(game_main_character_movement.system())
                 .with_system(game_camera_movement.system())
                 .with_system(game_save.exclusive_system()),
         )
+        // Replay
         .add_system_set(
             SystemSet::on_update(AppState::Replay)
                 .with_system(game_main_character_input_replay.system())
                 .with_system(game_ui.system().after("character_input"))
+                .with_system(game_main_character_movement.system())
                 .with_system(game_camera_movement.system()),
         )
         // PostUpdate
@@ -87,7 +84,9 @@ fn main() {
         .add_system_to_stage(CoreStage::Last, game_replay.system().label("game_replay"))
         .add_system_to_stage(
             CoreStage::Last,
-            debug_main_character_final_position.system().after("game_replay"),
+            debug_main_character_final_position
+                .system()
+                .after("game_replay"),
         )
         .run();
 }
@@ -123,9 +122,6 @@ struct Boundary {
     collider_shape: SharedShape,
     collider_position: ColliderPosition,
 }
-
-#[derive(Clone, Copy)]
-struct Tick(usize);
 
 struct TickText;
 
@@ -728,18 +724,6 @@ struct MainCharacterMovement {
     want_to_move: Vec2,
     walk_speed: f32,
     run_speed: f32,
-}
-
-struct MainCharacterInput {
-    tick: Tick,
-    movement: Vec2,
-}
-
-struct GameReplay {
-    tick: Tick,
-    main_character_inputs: Vec<MainCharacterInput>,
-    main_character_inputs_index: usize,
-    main_character_final_position: Vec3,
 }
 
 enum ButtonType {

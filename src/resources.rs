@@ -18,9 +18,35 @@ pub struct InitResourcesPlugin;
 
 impl Plugin for InitResourcesPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_startup_system(init_shader_resources.system())
-            .add_startup_system(init_ui_resources.system());
+        app.insert_resource(Tick(0))
+            .insert_resource(AmbientLight {
+                color: Color::WHITE,
+                brightness: 0.1,
+            })
+            .insert_resource(GameReplay {
+                tick: Tick(0),
+                main_character_inputs: Vec::with_capacity(1024),
+                main_character_inputs_index: 0,
+                main_character_final_position: Vec3::ZERO,
+            })
+            .add_startup_system_to_stage(StartupStage::PreStartup, init_shader_resources.system())
+            .add_startup_system_to_stage(StartupStage::PreStartup, init_ui_resources.system());
     }
+}
+
+#[derive(Clone, Copy)]
+pub struct Tick(pub usize);
+
+pub struct GameReplay {
+    pub tick: Tick,
+    pub main_character_inputs: Vec<MainCharacterInput>,
+    pub main_character_inputs_index: usize,
+    pub main_character_final_position: Vec3,
+}
+
+pub struct MainCharacterInput {
+    pub tick: Tick,
+    pub movement: Vec2,
 }
 
 #[derive(RenderResources, Default, TypeUuid)]
@@ -66,7 +92,11 @@ fn init_shader_resources(
     });
 }
 
-fn init_ui_resources(mut commands: Commands, asset_server: Res<AssetServer>, mut materials: ResMut<Assets<ColorMaterial>>) {
+fn init_ui_resources(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+) {
     commands.insert_resource(UIResources {
         font: asset_server.load("fonts/FiraSans-Bold.ttf"),
         transparent: materials.add(Color::NONE.into()),
