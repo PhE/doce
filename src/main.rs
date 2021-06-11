@@ -16,6 +16,7 @@ use bevy_rapier3d::{physics::TimestepMode, prelude::*};
 
 mod app_state;
 mod cleanup;
+mod debug;
 mod main_menu;
 mod physics;
 mod resources;
@@ -23,6 +24,9 @@ mod ui;
 
 use app_state::{AppState, InitAppStatePlugin};
 use cleanup::{CleanupConfig, CleanupPlugin};
+use debug::DebugPlugin;
+use debug::DebugRigidBodyIndex;
+use debug::DebugSimulationStateEvent;
 use main_menu::MainMenuPlugin;
 use physics::PhysicsPlugin;
 use resources::CheckerboardMaterial;
@@ -41,10 +45,10 @@ fn main() {
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_asset::<CheckerboardMaterial>()
-        .add_event::<DebugMainCharacterFinalPositionEvent>()
         .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
         .add_plugin(CleanupPlugin)
+        .add_plugin(DebugPlugin)
         .add_plugin(MainMenuPlugin)
         .add_plugin(UIPlugin)
         .add_startup_system(setup.system())
@@ -100,13 +104,8 @@ fn main() {
                 )
                 .with_system(game_camera_movement.system()),
         )
-        // PostUpdate
-        .add_system_to_stage(CoreStage::PostUpdate, game_increment_tick.system())
         // Last
-        .add_system_to_stage(
-            CoreStage::Last,
-            debug_main_character_final_position.system(),
-        )
+        .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
         .run();
 }
 
@@ -114,8 +113,6 @@ struct InitialEnvironment {
     boundaries: Vec<Boundary>,
     ball_template: BallTemplate,
 }
-
-struct InitialRigidBodyPosition(RigidBodyPosition);
 
 struct BallTemplate {
     mesh: Handle<Mesh>,
@@ -401,8 +398,7 @@ fn game_setup_main_character(
             shape: ColliderShape::capsule(point![0.0, -0.5, 0.0], point![0.0, 0.5, 0.0], 0.5),
             ..Default::default()
         })
-        .insert(RigidBodyPositionSync::Discrete)
-        .insert(InitialRigidBodyPosition(rigid_body_position.clone()));
+        .insert(RigidBodyPositionSync::Discrete);
 }
 
 fn game_setup_environment(
@@ -426,6 +422,8 @@ fn game_setup_environment(
             });
     }
 
+    let mut count = 0;
+
     for &rigid_body_position in &initial_environment.ball_template.rigid_body_positions {
         commands
             .spawn_bundle(PbrBundle {
@@ -446,7 +444,9 @@ fn game_setup_environment(
                 ..Default::default()
             })
             .insert(RigidBodyPositionSync::Discrete)
-            .insert(InitialRigidBodyPosition(rigid_body_position));
+            .insert(DebugRigidBodyIndex(count));
+
+        count += 1;
     }
 }
 
@@ -533,14 +533,14 @@ fn game_main_character_input_record(
 
 fn game_main_character_input_replay(
     tick: Res<Tick>,
-    mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>,
+    mut debug_events: EventWriter<DebugSimulationStateEvent>,
     mut game_replay: ResMut<GameReplay>,
     mut rapier_config: ResMut<RapierConfiguration>,
     mut query: Query<&mut MainCharacterMovement>,
 ) {
     if tick.0 >= game_replay.tick.0 {
         if rapier_config.physics_pipeline_active {
-            debug_events.send(DebugMainCharacterFinalPositionEvent::Compare);
+            debug_events.send(DebugSimulationStateEvent::Compare);
         }
 
         rapier_config.physics_pipeline_active = false;
@@ -632,8 +632,8 @@ fn game_save(world: &mut World) {
     }
 }
 
-fn game_cleanup(mut debug_events: EventWriter<DebugMainCharacterFinalPositionEvent>) {
-    debug_events.send(DebugMainCharacterFinalPositionEvent::Record);
+fn game_cleanup(mut debug_events: EventWriter<DebugSimulationStateEvent>) {
+    debug_events.send(DebugSimulationStateEvent::Record);
 }
 
 fn game_increment_tick(
@@ -656,44 +656,6 @@ fn replay_setup(mut tick: ResMut<Tick>, mut game_replay: ResMut<GameReplay>) {
     tick.0 = 0;
 
     game_replay.main_character_inputs_index = 0;
-}
-
-enum DebugMainCharacterFinalPositionEvent {
-    Record,
-    Compare,
-}
-
-fn debug_main_character_final_position(
-    mut events: EventReader<DebugMainCharacterFinalPositionEvent>,
-    mut game_replay: ResMut<GameReplay>,
-    query: Query<&Transform, With<MainCharacter>>,
-) {
-    for event in events.iter() {
-        let transform = query.single().unwrap();
-
-        match event {
-            DebugMainCharacterFinalPositionEvent::Record => {
-                game_replay.main_character_final_position = transform.translation
-            }
-            DebugMainCharacterFinalPositionEvent::Compare => info!(
-                "Comparing main character position at the end of replay:
-\tIdentical: {}
-\tRecorded position: {}. Binary: [{:032b}, {:032b}, {:032b}]
-\tActual   position: {}. Binary: [{:032b}, {:032b}, {:032b}]
-\tDifference: {}",
-                game_replay.main_character_final_position == transform.translation,
-                game_replay.main_character_final_position,
-                game_replay.main_character_final_position.x.to_bits(),
-                game_replay.main_character_final_position.y.to_bits(),
-                game_replay.main_character_final_position.z.to_bits(),
-                transform.translation,
-                transform.translation.x.to_bits(),
-                transform.translation.y.to_bits(),
-                transform.translation.z.to_bits(),
-                game_replay.main_character_final_position - transform.translation
-            ),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
