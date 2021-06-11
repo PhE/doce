@@ -1,15 +1,11 @@
 use bevy::{
     app::AppExit,
-    pbr::AmbientLight,
+    math::Vec4Swizzles,
     prelude::*,
-    reflect::{TypeRegistry, TypeUuid},
+    reflect::TypeRegistry,
     render::{
-        camera::Camera,
+        camera::{Camera, CameraProjection, PerspectiveProjection},
         mesh::shape,
-        pipeline::{PipelineDescriptor, RenderPipeline},
-        render_graph::{base, AssetRenderResourcesNode, RenderGraph},
-        renderer::RenderResources,
-        shader::ShaderStages,
     },
 };
 use bevy_rapier3d::{physics::TimestepMode, prelude::*};
@@ -21,6 +17,7 @@ mod main_menu;
 mod physics;
 mod resources;
 mod ui;
+mod weapons;
 
 use app_state::{AppState, InitAppStatePlugin};
 use cleanup::{CleanupConfig, CleanupPlugin};
@@ -28,15 +25,16 @@ use debug::DebugPlugin;
 use debug::DebugRigidBodyIndex;
 use debug::DebugSimulationStateEvent;
 use main_menu::MainMenuPlugin;
-use physics::PhysicsPlugin;
+use physics::{PhysicsPlugin, PhysicsStages, PhysicsSystems};
 use resources::CheckerboardMaterial;
 use resources::GameReplay;
 use resources::InitResourcesPlugin;
 use resources::MainCharacterInput;
-use resources::ShaderResources;
+use resources::PbrResources;
 use resources::Tick;
 use resources::UIResources;
 use ui::UIPlugin;
+use weapons::{ProjectileBundle, WeaponsPlugin};
 
 fn main() {
     App::build()
@@ -51,6 +49,7 @@ fn main() {
         .add_plugin(DebugPlugin)
         .add_plugin(MainMenuPlugin)
         .add_plugin(UIPlugin)
+        .add_plugin(WeaponsPlugin)
         .add_startup_system(setup.system())
         // Update
         // In-game
@@ -76,7 +75,8 @@ fn main() {
                         .system()
                         .after("character_input"),
                 )
-                .with_system(game_camera_movement.system())
+                .with_system(main_character_rotation.system().label("character_rotation"))
+                .with_system(main_character_shoot.system().after("character_rotation"))
                 .with_system(game_save.exclusive_system()),
         )
         .add_system_set(SystemSet::on_exit(AppState::InGame).with_system(game_cleanup.system()))
@@ -101,9 +101,17 @@ fn main() {
                     game_main_character_movement
                         .system()
                         .after("character_input"),
-                )
-                .with_system(game_camera_movement.system()),
+                ),
         )
+        // PhysicsStages::PostUpdate
+        .add_system_to_stage(
+            PhysicsStages::PostUpdate,
+            game_main_character_clamp_position
+                .system()
+                .before(PhysicsSystems::SyncTransforms),
+        )
+        // CoreStages::PostUpdate
+        .add_system_to_stage(CoreStage::PostUpdate, game_camera_movement.system())
         // Last
         .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
         .run();
@@ -144,22 +152,28 @@ fn setup(
 
     rapier_config.timestep_mode = TimestepMode::FixedTimestep;
 
+    let size = 50.0;
+
     let transforms = vec![
         // Floor
         Transform::identity(),
         // Ceiling
-        Transform::from_xyz(0.0, 20.0, 0.0).looking_at(Vec3::new(0.0, 20.0, 1.0), -Vec3::Y),
+        Transform::from_xyz(0.0, size, 0.0).looking_at(Vec3::new(0.0, size, 1.0), -Vec3::Y),
         // Wall X-
-        Transform::from_xyz(-10.0, 10.0, 0.0).looking_at(Vec3::new(-10.0, 20.0, 0.0), Vec3::X),
+        Transform::from_xyz(-size / 2.0, size / 2.0, 0.0)
+            .looking_at(Vec3::new(-size / 2.0, size, 0.0), Vec3::X),
         // Wall X+
-        Transform::from_xyz(10.0, 10.0, 0.0).looking_at(Vec3::new(10.0, 20.0, 0.0), -Vec3::X),
+        Transform::from_xyz(size / 2.0, size / 2.0, 0.0)
+            .looking_at(Vec3::new(size / 2.0, size, 0.0), -Vec3::X),
         // Wall Z-
-        Transform::from_xyz(0.0, 10.0, -10.0).looking_at(Vec3::new(0.0, 20.0, -10.0), Vec3::Z),
+        Transform::from_xyz(0.0, size / 2.0, -size / 2.0)
+            .looking_at(Vec3::new(0.0, size, -size / 2.0), Vec3::Z),
         // Wall Z+
-        Transform::from_xyz(0.0, 10.0, 10.0).looking_at(Vec3::new(0.0, 20.0, 10.0), -Vec3::Z),
+        Transform::from_xyz(0.0, size / 2.0, size / 2.0)
+            .looking_at(Vec3::new(0.0, size, size / 2.0), -Vec3::Z),
     ];
 
-    let plane = meshes.add(Mesh::from(shape::Plane { size: 20.0 }));
+    let plane = meshes.add(Mesh::from(shape::Plane { size }));
 
     let boundaries = transforms
         .into_iter()
@@ -177,7 +191,7 @@ fn setup(
 
     for i in -9..=9 {
         for j in -9..=9 {
-            for k in 0..2 {
+            for k in 0..1 {
                 rigid_body_positions.push(vector![i as f32, 4.0 + k as f32, j as f32].into());
             }
         }
@@ -356,65 +370,68 @@ fn game_setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
         });
 }
 
-fn game_setup_main_character(
-    mut commands: Commands,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-) {
+fn game_setup_main_character(mut commands: Commands, pbr_resources: Res<PbrResources>) {
     let control_camera = commands
         .spawn_bundle(PerspectiveCameraBundle {
-            transform: Transform::from_xyz(5.0, 5.0, 5.0).looking_at(Vec3::ZERO, Vec3::Y),
+            transform: Transform::from_xyz(10.0, 10.0, 10.0).looking_at(Vec3::ZERO, Vec3::Y),
             ..Default::default()
         })
+        .insert(MainCamera)
         .id();
-    let rigid_body_position = vector![0.0, 1.0, 0.0].into();
 
     commands
         .spawn()
         .insert(MainCharacter {
             control_camera,
-            control_camera_offset: Vec3::new(5.0, 5.0, 5.0),
+            control_camera_offset: Vec3::new(10.0, 10.0, 10.0),
         })
         .insert(MainCharacterMovement {
             want_to_move: Vec2::ZERO,
             walk_speed: 5.0,
             run_speed: 10.0,
         })
-        .insert_bundle(PbrBundle {
-            mesh: meshes.add(Mesh::from(shape::Capsule {
-                depth: 1.0,
-                radius: 0.5,
-                ..Default::default()
-            })),
-            material: materials.add(StandardMaterial::default()),
-            ..Default::default()
-        })
         .insert_bundle(RigidBodyBundle {
             body_type: RigidBodyType::KinematicVelocityBased,
-            position: rigid_body_position,
             ..Default::default()
         })
         .insert_bundle(ColliderBundle {
-            shape: ColliderShape::capsule(point![0.0, -0.5, 0.0], point![0.0, 0.5, 0.0], 0.5),
+            shape: ColliderShape::capsule(point![0.0, 0.5, 0.0], point![0.0, 1.5, 0.0], 0.5),
             ..Default::default()
         })
-        .insert(RigidBodyPositionSync::Discrete);
+        .insert(RigidBodyPositionSync::Discrete)
+        .with_children(|parent| {
+            // Main character model
+            parent.spawn_bundle(PbrBundle {
+                mesh: pbr_resources.main_character_mesh.clone(),
+                material: pbr_resources.main_character_material.clone(),
+                transform: Transform::from_xyz(0.0, 1.0, 0.0),
+                ..Default::default()
+            });
+
+            // Weapon model
+            parent.spawn_bundle(PbrBundle {
+                mesh: pbr_resources.weapon_mesh.clone(),
+                material: pbr_resources.weapon_material.clone(),
+                transform: Transform::from_xyz(0.0, 1.5, 0.7),
+                ..Default::default()
+            });
+        });
 }
 
 fn game_setup_environment(
     mut commands: Commands,
     initial_environment: Res<InitialEnvironment>,
-    shader_resources: Res<ShaderResources>,
+    pbr_resources: Res<PbrResources>,
 ) {
     for boundary in &initial_environment.boundaries {
         commands
             .spawn_bundle(MeshBundle {
                 mesh: boundary.mesh.clone(),
-                render_pipelines: shader_resources.checkerboard_render_pipelines.clone(),
+                render_pipelines: pbr_resources.checkerboard_render_pipelines.clone(),
                 transform: boundary.mesh_transform,
                 ..Default::default()
             })
-            .insert(shader_resources.checkerboard_material.clone())
+            .insert(pbr_resources.checkerboard_material.clone())
             .insert_bundle(ColliderBundle {
                 shape: boundary.collider_shape.clone(),
                 position: boundary.collider_position,
@@ -572,13 +589,10 @@ fn game_main_character_movement(
     mut character_query: Query<(
         &MainCharacter,
         &MainCharacterMovement,
-        &mut RigidBodyPosition,
         &mut RigidBodyVelocity,
     )>,
 ) {
-    for (character, character_movement, mut body_position, mut body_velocity) in
-        character_query.iter_mut()
-    {
+    for (character, character_movement, mut body_velocity) in character_query.iter_mut() {
         let camera_transform = camera_query.get(character.control_camera).unwrap();
 
         let mut velocity = character_movement.want_to_move.x * camera_transform.local_x();
@@ -594,11 +608,88 @@ fn game_main_character_movement(
         velocity += character_movement.want_to_move.y * forward;
 
         body_velocity.linvel = velocity.into();
+    }
+}
 
+fn main_character_rotation(
+    windows: Res<Windows>,
+    camera_query: Query<(&Transform, &PerspectiveProjection), With<MainCamera>>,
+    mut character_query: Query<&mut RigidBodyPosition, With<MainCharacter>>,
+) {
+    for (camera_transform, camera_projection) in camera_query.iter() {
+        let window = windows.get_primary().unwrap();
+
+        let cursor_screen_position = match window.cursor_position() {
+            Some(o) => o,
+            None => return,
+        };
+        let cursor_clip_position = Vec4::new(
+            2.0 * cursor_screen_position.x / window.width() - 1.0,
+            2.0 * cursor_screen_position.y / window.height() - 1.0,
+            1.0,
+            1.0,
+        );
+        let mut cursor_model_position =
+            camera_projection.get_projection_matrix().inverse() * cursor_clip_position;
+        cursor_model_position /= cursor_model_position.w;
+        let cursor_world_position = camera_transform.compute_matrix() * cursor_model_position;
+        let mut cursor_direction = cursor_world_position.xyz() - camera_transform.translation;
+        cursor_direction = cursor_direction.try_normalize().unwrap();
+        let mut cursor_plane_position = camera_transform.translation
+            + cursor_direction * (camera_transform.translation.y - 1.0) / -cursor_direction.y;
+        cursor_plane_position.y = 0.0;
+
+        for mut character_position in character_query.iter_mut() {
+            let forward = Vec3::normalize(
+                cursor_plane_position - character_position.position.translation.into(),
+            );
+            let right = Vec3::Y.cross(forward).normalize();
+            let up = forward.cross(right);
+
+            character_position.position.rotation =
+                Quat::from_rotation_mat3(&Mat3::from_cols(right, up, forward)).into();
+        }
+    }
+}
+
+fn main_character_shoot(
+    mut commands: Commands,
+    pbr_resources: Res<PbrResources>,
+    inputs: Res<Input<MouseButton>>,
+    query: Query<&RigidBodyPosition, With<MainCharacter>>,
+) {
+    if inputs.just_pressed(MouseButton::Left) {
+        for character_position in query.iter() {
+            let mut projectile_bundle = ProjectileBundle::default();
+            projectile_bundle.rigid_body.position = *character_position;
+            projectile_bundle.rigid_body.position.position.translation.y = 1.5;
+            projectile_bundle.rigid_body.velocity = RigidBodyVelocity {
+                linvel: character_position.position.rotation * Vector::z() * 10.0,
+                ..Default::default()
+            };
+
+            commands
+                .spawn_bundle(projectile_bundle)
+                .with_children(|parent| {
+                    parent.spawn_bundle(PbrBundle {
+                        mesh: pbr_resources.projectile_mesh.clone(),
+                        material: pbr_resources.projectile_material.clone(),
+                        transform: Transform::identity().looking_at(Vec3::Y, Vec3::Z),
+                        ..Default::default()
+                    });
+                });
+        }
+    }
+}
+
+fn game_main_character_clamp_position(
+    mut query: Query<&mut RigidBodyPosition, With<MainCharacter>>,
+) {
+    for mut body_position in query.iter_mut() {
         body_position.position.translation = Vec3::clamp(
             body_position.position.translation.into(),
-            Vec3::new(-9.5, 1.0, -9.5),
-            Vec3::new(9.5, 19.0, 9.5),
+            Vec3::new(-24.5, 0.0, -24.5),
+            Vec3::new(24.5, 48.0, 24.5),
         )
         .into();
     }
@@ -610,7 +701,11 @@ fn game_camera_movement(
         Query<&mut Transform, With<Camera>>,
     )>,
 ) {
-    let (&character, &character_transform) = query_set.q0().single().unwrap();
+    let (&character, &character_transform) = match query_set.q0().single() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+
     let mut camera_transform = query_set
         .q1_mut()
         .get_mut(character.control_camera)
@@ -618,7 +713,7 @@ fn game_camera_movement(
     camera_transform.translation = Vec3::lerp(
         camera_transform.translation,
         character_transform.translation + character.control_camera_offset,
-        0.02,
+        0.05,
     );
 }
 
@@ -657,6 +752,8 @@ fn replay_setup(mut tick: ResMut<Tick>, mut game_replay: ResMut<GameReplay>) {
 
     game_replay.main_character_inputs_index = 0;
 }
+
+struct MainCamera;
 
 #[derive(Clone, Copy)]
 struct MainCharacter {
