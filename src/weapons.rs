@@ -22,23 +22,23 @@ pub struct ProjectileBundle {
 impl Default for ProjectileBundle {
     fn default() -> Self {
         Self {
-            lifespan: ProjectileLifespan(1.0),
+            lifespan: ProjectileLifespan(100.0),
             rigid_body: RigidBodyBundle {
                 body_type: RigidBodyType::Dynamic,
                 forces: RigidBodyForces {
-                    gravity_scale: 0.0,
+                    gravity_scale: 1.0,
                     ..Default::default()
                 },
                 ccd: RigidBodyCcd {
                     ccd_thickness: 0.0,
-                    ccd_max_dist: 0.2,
+                    ccd_max_dist: 0.4,
                     ccd_active: false,
                     ccd_enabled: true,
                 },
                 ..Default::default()
             },
             collider: ColliderBundle {
-                collider_type: ColliderType::Sensor,
+                // collider_type: ColliderType::Sensor,
                 ..Default::default()
             },
             rigid_body_position_sync: RigidBodyPositionSync::Discrete,

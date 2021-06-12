@@ -18,4 +18,4 @@ codegen-units = 1
 
 [dependencies]
 bevy = "*"
-bevy_rapier3d = { version = "~0.10.0", features = ["enhanced-determinism", "serde-serialize"] }
+bevy_rapier3d = { git = "https://github.com/dimforge/bevy_rapier", branch = "joint_removal", features = ["enhanced-determinism", "serde-serialize"] }

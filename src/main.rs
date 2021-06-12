@@ -189,10 +189,10 @@ fn setup(
 
     let mut rigid_body_positions = Vec::new();
 
-    for i in -9..=9 {
-        for j in -9..=9 {
+    for i in -5..=5 {
+        for j in -5..=5 {
             for k in 0..1 {
-                rigid_body_positions.push(vector![i as f32, 4.0 + k as f32, j as f32].into());
+                rigid_body_positions.push(vector![2.0 * i as f32, 8.0 + 2.0 * k as f32, 2.0 * j as f32].into());
             }
         }
     }
@@ -201,7 +201,7 @@ fn setup(
         boundaries,
         ball_template: BallTemplate {
             mesh: meshes.add(Mesh::from(shape::Icosphere {
-                radius: 0.5,
+                radius: 1.0,
                 ..Default::default()
             })),
             mesh_material: materials.add(Color::CYAN.into()),
@@ -214,7 +214,7 @@ fn setup(
                 ..Default::default()
             },
             rigid_body_positions,
-            collider_shape: ColliderShape::ball(0.5),
+            collider_shape: ColliderShape::ball(1.0),
             collider_material: ColliderMaterial {
                 friction: 0.8,
                 restitution: 0.8,
@@ -653,20 +653,26 @@ fn main_character_rotation(
 }
 
 fn main_character_shoot(
+    mut projectile_shape: Local<Option<SharedShape>>,
     mut commands: Commands,
     pbr_resources: Res<PbrResources>,
     inputs: Res<Input<MouseButton>>,
     query: Query<&RigidBodyPosition, With<MainCharacter>>,
 ) {
+    if let None = *projectile_shape {
+        *projectile_shape = Some(SharedShape::capsule(point!(0.0, 0.0, -0.1), point!(0.0, 0.0, 0.1), 0.1));
+    }
+
     if inputs.just_pressed(MouseButton::Left) {
         for character_position in query.iter() {
             let mut projectile_bundle = ProjectileBundle::default();
             projectile_bundle.rigid_body.position = *character_position;
             projectile_bundle.rigid_body.position.position.translation.y = 1.5;
             projectile_bundle.rigid_body.velocity = RigidBodyVelocity {
-                linvel: character_position.position.rotation * Vector::z() * 10.0,
+                linvel: character_position.position.rotation * Vector::z() * 100.0,
                 ..Default::default()
             };
+            projectile_bundle.collider.shape = projectile_shape.as_ref().unwrap().clone();
 
             commands
                 .spawn_bundle(projectile_bundle)
