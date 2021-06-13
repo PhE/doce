@@ -14,6 +14,7 @@ use bevy_rapier3d::prelude::*;
 mod app_state;
 mod cleanup;
 mod debug;
+mod despawn;
 mod enemy;
 mod main_menu;
 mod physics;
@@ -25,10 +26,11 @@ mod weapons;
 use app_state::{AppState, InitAppStatePlugin};
 use cleanup::{CleanupConfig, CleanupPlugin};
 use debug::{DebugPlugin, DebugRigidBodyIndex, DebugSimulationStateEvent};
+use despawn::DespawnPlugin;
 use enemy::EnemyPlugin;
 use main_menu::MainMenuPlugin;
 use physics::PhysicsPlugin;
-use random::{RandomPlugin, Random};
+use random::{Random, RandomPlugin};
 use resources::{
     GameReplay, InitResourcesPlugin, MainCharacterInput, PbrResources, Tick, UIResources,
 };
@@ -45,6 +47,7 @@ fn main() {
         .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
         .add_plugin(RandomPlugin)
+        .add_plugin(DespawnPlugin)
         .add_plugin(CleanupPlugin)
         .add_plugin(DebugPlugin)
         .add_plugin(MainMenuPlugin)

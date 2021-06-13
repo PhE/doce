@@ -1,18 +1,18 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
+use crate::despawn::DespawnAfter;
+
 pub struct WeaponsPlugin;
 
 impl Plugin for WeaponsPlugin {
-    fn build(&self, app: &mut AppBuilder) {
-        app.add_system_to_stage(CoreStage::Last, despawn_projectiles.system());
-    }
+    fn build(&self, app: &mut AppBuilder) {}
 }
 
 #[derive(Bundle)]
 pub struct ProjectileBundle {
     pub projectile: Projectile,
-    pub lifespan: ProjectileLifespan,
+    pub despawn_after: DespawnAfter,
     #[bundle]
     pub rigid_body: RigidBodyBundle,
     #[bundle]
@@ -24,7 +24,7 @@ impl Default for ProjectileBundle {
     fn default() -> Self {
         Self {
             projectile: Projectile,
-            lifespan: ProjectileLifespan(1.0),
+            despawn_after: DespawnAfter(1.0),
             rigid_body: RigidBodyBundle {
                 body_type: RigidBodyType::Dynamic,
                 forces: RigidBodyForces {
@@ -48,6 +48,7 @@ impl Default for ProjectileBundle {
                 },
                 flags: ColliderFlags {
                     active_events: ActiveEvents::INTERSECTION_EVENTS,
+                    collision_groups: InteractionGroups::new(1 << 2, u32::MAX),
                     ..Default::default()
                 },
                 ..Default::default()
@@ -58,19 +59,3 @@ impl Default for ProjectileBundle {
 }
 
 pub struct Projectile;
-
-pub struct ProjectileLifespan(f32);
-
-fn despawn_projectiles(
-    mut commands: Commands,
-    integration_parameters: Res<IntegrationParameters>,
-    mut query: Query<(Entity, &mut ProjectileLifespan)>,
-) {
-    for (entity, mut lifespan) in query.iter_mut() {
-        lifespan.0 -= integration_parameters.dt;
-
-        if lifespan.0 <= 0.0 {
-            commands.entity(entity).despawn_recursive();
-        }
-    }
-}
