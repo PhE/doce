@@ -11,6 +11,7 @@ impl Plugin for WeaponsPlugin {
 
 #[derive(Bundle)]
 pub struct ProjectileBundle {
+    pub projectile: Projectile,
     pub lifespan: ProjectileLifespan,
     #[bundle]
     pub rigid_body: RigidBodyBundle,
@@ -22,11 +23,12 @@ pub struct ProjectileBundle {
 impl Default for ProjectileBundle {
     fn default() -> Self {
         Self {
-            lifespan: ProjectileLifespan(100.0),
+            projectile: Projectile,
+            lifespan: ProjectileLifespan(1.0),
             rigid_body: RigidBodyBundle {
                 body_type: RigidBodyType::Dynamic,
                 forces: RigidBodyForces {
-                    gravity_scale: 1.0,
+                    gravity_scale: 0.0,
                     ..Default::default()
                 },
                 ccd: RigidBodyCcd {
@@ -38,13 +40,24 @@ impl Default for ProjectileBundle {
                 ..Default::default()
             },
             collider: ColliderBundle {
-                // collider_type: ColliderType::Sensor,
+                collider_type: ColliderType::Sensor,
+                material: ColliderMaterial {
+                    friction: 0.2,
+                    restitution: 0.8,
+                    ..Default::default()
+                },
+                flags: ColliderFlags {
+                    active_events: ActiveEvents::INTERSECTION_EVENTS,
+                    ..Default::default()
+                },
                 ..Default::default()
             },
             rigid_body_position_sync: RigidBodyPositionSync::Discrete,
         }
     }
 }
+
+pub struct Projectile;
 
 pub struct ProjectileLifespan(f32);
 
