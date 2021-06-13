@@ -33,6 +33,7 @@ pub struct InitResourcesPlugin;
 impl Plugin for InitResourcesPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.insert_resource(Tick(0))
+            .add_asset::<CheckerboardMaterial>()
             .insert_resource(AmbientLight {
                 color: Color::WHITE,
                 brightness: 0.1,

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use bevy_rapier3d::physics;
 use bevy_rapier3d::physics::{
     JointsEntityMap, ModificationTracker, PhysicsHooksWithQueryObject, RapierConfiguration,
-    SimulationToRenderTime,
+    SimulationToRenderTime, TimestepMode,
 };
 use bevy_rapier3d::prelude::IntersectionEvent;
 use bevy_rapier3d::rapier::dynamics::{CCDSolver, IntegrationParameters, IslandManager, JointSet};
@@ -74,7 +74,10 @@ impl<UserData: 'static + WorldQuery + Send + Sync> Plugin for PhysicsPlugin<User
         )
         .insert_resource(PhysicsPipeline::new())
         .insert_resource(QueryPipeline::new())
-        .insert_resource(RapierConfiguration::default())
+        .insert_resource(RapierConfiguration {
+            timestep_mode: TimestepMode::FixedTimestep,
+            ..Default::default()
+        })
         .insert_resource(IntegrationParameters::default())
         .insert_resource(BroadPhase::new())
         .insert_resource(NarrowPhase::new())

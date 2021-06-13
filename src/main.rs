@@ -8,48 +8,49 @@ use bevy::{
         mesh::shape,
     },
 };
-use bevy_rapier3d::{physics::TimestepMode, prelude::*};
+use bevy_egui::EguiPlugin;
+use bevy_rapier3d::prelude::*;
 
 mod app_state;
 mod cleanup;
 mod debug;
+mod enemy;
 mod main_menu;
 mod physics;
+mod random;
 mod resources;
 mod ui;
 mod weapons;
 
 use app_state::{AppState, InitAppStatePlugin};
 use cleanup::{CleanupConfig, CleanupPlugin};
-use debug::DebugPlugin;
-use debug::DebugRigidBodyIndex;
-use debug::DebugSimulationStateEvent;
+use debug::{DebugPlugin, DebugRigidBodyIndex, DebugSimulationStateEvent};
+use enemy::EnemyPlugin;
 use main_menu::MainMenuPlugin;
-use physics::{PhysicsPlugin, PhysicsStages, PhysicsSystems};
-use resources::CheckerboardMaterial;
-use resources::GameReplay;
-use resources::InitResourcesPlugin;
-use resources::MainCharacterInput;
-use resources::PbrResources;
-use resources::Tick;
-use resources::UIResources;
+use physics::PhysicsPlugin;
+use random::{RandomPlugin, Random};
+use resources::{
+    GameReplay, InitResourcesPlugin, MainCharacterInput, PbrResources, Tick, UIResources,
+};
 use ui::UIPlugin;
 use weapons::{ProjectileBundle, WeaponsPlugin};
 
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
+        .add_plugin(EguiPlugin)
         .add_plugin(PhysicsPlugin::<NoUserData>::default())
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
-        .add_asset::<CheckerboardMaterial>()
         .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
+        .add_plugin(RandomPlugin)
         .add_plugin(CleanupPlugin)
         .add_plugin(DebugPlugin)
         .add_plugin(MainMenuPlugin)
         .add_plugin(UIPlugin)
         .add_plugin(WeaponsPlugin)
+        .add_plugin(EnemyPlugin)
         .add_startup_system(setup.system())
         // Update
         // In-game
@@ -103,14 +104,6 @@ fn main() {
                         .after("character_input"),
                 ),
         )
-        // PhysicsStages::PostUpdate
-        .add_system_to_stage(
-            PhysicsStages::PostUpdate,
-            game_main_character_clamp_position
-                .system()
-                .before(PhysicsSystems::SyncTransforms),
-        )
-        // CoreStages::PostUpdate
         .add_system_to_stage(CoreStage::PostUpdate, game_camera_movement.system())
         // Last
         .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
@@ -143,14 +136,11 @@ struct TickText;
 
 fn setup(
     mut commands: Commands,
-    mut rapier_config: ResMut<RapierConfiguration>,
     asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     asset_server.watch_for_changes().unwrap();
-
-    rapier_config.timestep_mode = TimestepMode::FixedTimestep;
 
     let size = 50.0;
 
@@ -192,7 +182,8 @@ fn setup(
     for i in -5..=5 {
         for j in -5..=5 {
             for k in 0..1 {
-                rigid_body_positions.push(vector![2.0 * i as f32, 8.0 + 2.0 * k as f32, 2.0 * j as f32].into());
+                rigid_body_positions
+                    .push(vector![2.0 * i as f32, 8.0 + 2.0 * k as f32, 2.0 * j as f32].into());
             }
         }
     }
@@ -274,23 +265,6 @@ fn game_setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
             ..Default::default()
         })
         .with_children(|parent| {
-            parent.spawn_bundle(TextBundle {
-                style: Style {
-                    margin: Rect::all(Val::Px(5.0)),
-                    ..Default::default()
-                },
-                text: Text::with_section(
-                    "Controls: WASD",
-                    TextStyle {
-                        font: ui_resources.font.clone(),
-                        font_size: 24.0,
-                        color: Color::GREEN,
-                    },
-                    Default::default(),
-                ),
-                ..Default::default()
-            });
-
             parent
                 .spawn_bundle(TextBundle {
                     style: Style {
@@ -387,11 +361,12 @@ fn game_setup_main_character(mut commands: Commands, pbr_resources: Res<PbrResou
         })
         .insert(MainCharacterMovement {
             want_to_move: Vec2::ZERO,
-            walk_speed: 5.0,
-            run_speed: 10.0,
+            walk_speed: 2.0,
+            run_speed: 4.0,
         })
         .insert_bundle(RigidBodyBundle {
-            body_type: RigidBodyType::KinematicVelocityBased,
+            body_type: RigidBodyType::Dynamic,
+            mass_properties: RigidBodyMassPropsFlags::ROTATION_LOCKED.into(),
             ..Default::default()
         })
         .insert_bundle(ColliderBundle {
@@ -438,6 +413,8 @@ fn game_setup_environment(
                 ..Default::default()
             });
     }
+
+    return;
 
     let mut count = 0;
 
@@ -606,6 +583,7 @@ fn game_main_character_movement(
         });
 
         velocity += character_movement.want_to_move.y * forward;
+        velocity.y = body_velocity.linvel.y;
 
         body_velocity.linvel = velocity.into();
     }
@@ -635,11 +613,16 @@ fn main_character_rotation(
         let cursor_world_position = camera_transform.compute_matrix() * cursor_model_position;
         let mut cursor_direction = cursor_world_position.xyz() - camera_transform.translation;
         cursor_direction = cursor_direction.try_normalize().unwrap();
-        let mut cursor_plane_position = camera_transform.translation
-            + cursor_direction * (camera_transform.translation.y - 1.0) / -cursor_direction.y;
-        cursor_plane_position.y = 0.0;
 
         for mut character_position in character_query.iter_mut() {
+            let mut cursor_plane_position = camera_transform.translation
+                + cursor_direction
+                    * (camera_transform.translation.y
+                        - character_position.position.translation.y
+                        - 1.0)
+                    / -cursor_direction.y;
+            cursor_plane_position.y = character_position.position.translation.y;
+
             let forward = Vec3::normalize(
                 cursor_plane_position - character_position.position.translation.into(),
             );
@@ -660,7 +643,11 @@ fn main_character_shoot(
     query: Query<&RigidBodyPosition, With<MainCharacter>>,
 ) {
     if let None = *projectile_shape {
-        *projectile_shape = Some(SharedShape::capsule(point!(0.0, 0.0, -0.1), point!(0.0, 0.0, 0.1), 0.1));
+        *projectile_shape = Some(SharedShape::capsule(
+            point!(0.0, 0.0, -0.1),
+            point!(0.0, 0.0, 0.1),
+            0.1,
+        ));
     }
 
     if inputs.just_pressed(MouseButton::Left) {
@@ -685,19 +672,6 @@ fn main_character_shoot(
                     });
                 });
         }
-    }
-}
-
-fn game_main_character_clamp_position(
-    mut query: Query<&mut RigidBodyPosition, With<MainCharacter>>,
-) {
-    for mut body_position in query.iter_mut() {
-        body_position.position.translation = Vec3::clamp(
-            body_position.position.translation.into(),
-            Vec3::new(-24.5, 0.0, -24.5),
-            Vec3::new(24.5, 48.0, 24.5),
-        )
-        .into();
     }
 }
 
@@ -772,6 +746,8 @@ struct MainCharacterMovement {
     walk_speed: f32,
     run_speed: f32,
 }
+
+pub struct Health(f32);
 
 enum ButtonType {
     Play,
