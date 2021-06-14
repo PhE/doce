@@ -1,7 +1,7 @@
 use bevy::prelude::*;
 use bevy_rapier3d::prelude::*;
 
-use crate::despawn::DespawnAfter;
+use crate::{despawn::DespawnAfter, PhysicsFlags};
 
 pub struct WeaponsPlugin;
 
@@ -48,7 +48,10 @@ impl Default for ProjectileBundle {
                 },
                 flags: ColliderFlags {
                     active_events: ActiveEvents::INTERSECTION_EVENTS,
-                    collision_groups: InteractionGroups::new(1 << 2, u32::MAX),
+                    collision_groups: InteractionGroups::new(
+                        PhysicsFlags::PROJECTILE.bits(),
+                        !PhysicsFlags::PLAYER.bits(),
+                    ),
                     ..Default::default()
                 },
                 ..Default::default()

@@ -11,6 +11,9 @@ use bevy::{
 use bevy_egui::EguiPlugin;
 use bevy_rapier3d::prelude::*;
 
+#[macro_use]
+extern crate bitflags;
+
 mod app_state;
 mod cleanup;
 mod debug;
@@ -37,10 +40,22 @@ use resources::{
 use ui::UIPlugin;
 use weapons::{ProjectileBundle, WeaponsPlugin};
 
+bitflags! {
+    struct PhysicsFlags: u32 {
+        const NONE =        0b0000_0000_0000_0000_0000_0000_0000_0000;
+        const PLAYER =      0b0000_0000_0000_0000_0000_0000_0000_0001;
+        const ENEMY =       0b0000_0000_0000_0000_0000_0000_0000_0010;
+        const PROJECTILE =  0b0000_0000_0000_0000_0000_0000_0000_0100;
+        const EFFECT =      0b0100_0000_0000_0000_0000_0000_0000_0000;
+        const ENVIRONMENT = 0b1000_0000_0000_0000_0000_0000_0000_0000;
+    }
+}
+
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
         .add_plugin(EguiPlugin)
+        // .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugin(PhysicsPlugin::<NoUserData>::default())
         // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
         // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
@@ -374,6 +389,10 @@ fn game_setup_main_character(mut commands: Commands, pbr_resources: Res<PbrResou
         })
         .insert_bundle(ColliderBundle {
             shape: ColliderShape::capsule(point![0.0, 0.5, 0.0], point![0.0, 1.5, 0.0], 0.5),
+            flags: ColliderFlags {
+                collision_groups: InteractionGroups::new(PhysicsFlags::PLAYER.bits(), u32::MAX),
+                ..Default::default()
+            },
             ..Default::default()
         })
         .insert(RigidBodyPositionSync::Discrete)

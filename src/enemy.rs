@@ -1,20 +1,28 @@
 use std::f32::consts::PI;
 
 use bevy::{core::FixedTimestep, math::Vec3Swizzles, prelude::*, render::mesh::shape};
-use bevy_rapier3d::{na::distance, prelude::*};
+use bevy_rapier3d::{
+    na::{distance, UnitQuaternion},
+    prelude::*,
+};
 use rand::Rng;
 
-use crate::{despawn::DespawnAfter, weapons::Projectile, AppState, Health, MainCharacter, Random};
+use crate::{
+    despawn::DespawnAfter, weapons::Projectile, AppState, Health, MainCharacter, PhysicsFlags,
+    Random,
+};
 
 pub struct EnemyPlugin;
 
 impl Plugin for EnemyPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_startup_system(init_enemy_resources.system())
+        app.add_event::<EnemyHitEvent>()
+            .add_startup_system(init_enemy_resources.system())
             .add_system_set(
                 SystemSet::on_update(AppState::InGame)
                     .with_system(enemy_movement.system())
-                    .with_system(enemy_hit.system()),
+                    .with_system(enemy_hit.system().label("hit_enemy"))
+                    .with_system(damage_enemy.system().after("hit_enemy")),
             )
             .add_system_set(
                 SystemSet::on_update(AppState::InGame)
@@ -25,7 +33,8 @@ impl Plugin for EnemyPlugin {
                 SystemSet::on_update(AppState::InGame)
                     .with_run_criteria(FixedTimestep::step(1.0))
                     .with_system(enemy_director.system()),
-            );
+            )
+            .add_system_to_stage(CoreStage::PostUpdate, spawn_enemy_blood_splatters.system());
     }
 }
 
@@ -63,6 +72,12 @@ pub enum EnemyBehavior {
     Death,
 }
 
+struct EnemyHitEvent {
+    enemy: Entity,
+    position: Point<f32>,
+    direction: UnitVector<f32>,
+}
+
 struct EnemyResources {
     enemy_mesh: Handle<Mesh>,
     enemy_material: Handle<StandardMaterial>,
@@ -93,18 +108,11 @@ fn init_enemy_resources(
 
 fn enemy_hit(
     mut commands: Commands,
-    enemy_resources: Res<EnemyResources>,
-    mut random: ResMut<Random>,
     mut intersection_events: EventReader<IntersectionEvent>,
+    mut enemy_hit_events: EventWriter<EnemyHitEvent>,
     mut query_set: QuerySet<(
-        Query<(&Transform, &RigidBodyVelocity), With<Projectile>>,
-        Query<(
-            &mut EnemyBehavior,
-            &mut Health,
-            &mut RigidBodyVelocity,
-            &mut RigidBodyMassProps,
-            &mut ColliderFlags,
-        )>,
+        Query<(&RigidBodyPosition, &RigidBodyVelocity), With<Projectile>>,
+        Query<&EnemyBehavior>,
     )>,
 ) {
     for intersection_event in intersection_events.iter() {
@@ -116,24 +124,20 @@ fn enemy_hit(
         let collider2 = intersection_event.collider2;
 
         let projectile_entity: Entity;
-        let projectile_transform: Transform;
+        let projectile_position: RigidBodyPosition;
         let projectile_velocity: RigidBodyVelocity;
         let enemy_entity: Entity;
-        let mut enemy_behavior: Mut<EnemyBehavior>;
-        let mut enemy_health: Mut<Health>;
-        let mut enemy_velocity: Mut<RigidBodyVelocity>;
-        let mut enemy_mass_props: Mut<RigidBodyMassProps>;
-        let mut enemy_flags: Mut<ColliderFlags>;
+        let enemy_behavior: &EnemyBehavior;
 
         let projectile_query = query_set.q0();
 
         if let Ok((&transform, &velocity)) = projectile_query.get(collider1.entity()) {
             projectile_entity = collider1.entity();
-            projectile_transform = transform;
+            projectile_position = transform;
             projectile_velocity = velocity;
         } else if let Ok((&transform, &velocity)) = projectile_query.get(collider2.entity()) {
             projectile_entity = collider2.entity();
-            projectile_transform = transform;
+            projectile_position = transform;
             projectile_velocity = velocity;
         } else {
             continue;
@@ -141,24 +145,12 @@ fn enemy_hit(
 
         let enemy_query = query_set.q1_mut();
 
-        if let Ok((behavior, health, velocity, mass_props, flags)) =
-            enemy_query.get_mut(collider1.entity())
-        {
+        if let Ok(behavior) = enemy_query.get_mut(collider1.entity()) {
             enemy_entity = collider1.entity();
             enemy_behavior = behavior;
-            enemy_health = health;
-            enemy_velocity = velocity;
-            enemy_mass_props = mass_props;
-            enemy_flags = flags;
-        } else if let Ok((behavior, health, velocity, mass_props, flags)) =
-            enemy_query.get_mut(collider2.entity())
-        {
+        } else if let Ok(behavior) = enemy_query.get_mut(collider2.entity()) {
             enemy_entity = collider2.entity();
             enemy_behavior = behavior;
-            enemy_health = health;
-            enemy_velocity = velocity;
-            enemy_mass_props = mass_props;
-            enemy_flags = flags;
         } else {
             continue;
         }
@@ -167,28 +159,13 @@ fn enemy_hit(
             continue;
         }
 
+        enemy_hit_events.send(EnemyHitEvent {
+            enemy: enemy_entity,
+            position: projectile_position.position.translation.vector.into(),
+            direction: UnitVector::new_normalize(projectile_velocity.linvel),
+        });
+
         commands.entity(projectile_entity).despawn_recursive();
-
-        spawn_blood_splatters(
-            &mut commands,
-            projectile_transform.translation,
-            &enemy_resources,
-            &mut random,
-        );
-
-        enemy_health.0 -= 50.0;
-
-        if enemy_health.0 <= 0.0 {
-            commands.entity(enemy_entity).insert(DespawnAfter(4.0));
-            *enemy_behavior = EnemyBehavior::Death;
-            enemy_mass_props.flags = RigidBodyMassPropsFlags::empty();
-            enemy_velocity.apply_impulse_at_point(
-                &enemy_mass_props,
-                projectile_velocity.linvel.normalize() * 10.0,
-                projectile_transform.translation.into(),
-            );
-            // enemy_flags.collision_groups.filter &= !(1 << 1);
-        }
     }
 }
 
@@ -235,7 +212,10 @@ fn enemy_spawn(
                         restitution_combine_rule: CoefficientCombineRule::Min,
                     },
                     flags: ColliderFlags {
-                        collision_groups: InteractionGroups::new(1 << 1, u32::MAX),
+                        collision_groups: InteractionGroups::new(
+                            PhysicsFlags::ENEMY.bits(),
+                            u32::MAX,
+                        ),
                         ..Default::default()
                     },
                     ..Default::default()
@@ -324,47 +304,83 @@ fn enemy_movement(
     }
 }
 
-fn spawn_blood_splatters(
-    commands: &mut Commands,
-    position: Vec3,
-    enemy_resources: &Res<EnemyResources>,
-    random: &mut ResMut<Random>,
+fn damage_enemy(
+    mut commands: Commands,
+    mut enemy_hit_events: EventReader<EnemyHitEvent>,
+    mut query: Query<(
+        &mut EnemyBehavior,
+        &mut Health,
+        &mut RigidBodyMassProps,
+        &mut RigidBodyVelocity,
+        &mut ColliderFlags,
+    )>,
 ) {
-    for _ in 0..16 {
-        let direction = Quat::from_rotation_x(random.generator.gen_range(-PI..PI))
-            * Quat::from_rotation_y(random.generator.gen_range(-PI..PI))
-            * Vec3::Z;
+    for enemy_hit_event in enemy_hit_events.iter() {
+        let (mut behavior, mut health, mut body_mass_props, mut body_velocity, mut collider_flags) =
+            query.get_mut(enemy_hit_event.enemy).unwrap();
 
-        if direction.is_nan() {
-            error!("NaN detected! {}", direction);
-            continue;
+        health.0 -= 50.0;
+
+        if health.0 <= 0.0 {
+            commands
+                .entity(enemy_hit_event.enemy)
+                .insert(DespawnAfter(4.0));
+            *behavior = EnemyBehavior::Death;
+            body_mass_props.flags = RigidBodyMassPropsFlags::empty();
+            body_velocity.apply_impulse_at_point(
+                &body_mass_props,
+                enemy_hit_event.direction.scale(10.0),
+                enemy_hit_event.position,
+            );
+            collider_flags.collision_groups.filter = PhysicsFlags::ENVIRONMENT.bits();
         }
+    }
+}
 
-        commands.spawn_bundle(EnemyBloodSplatterBundle {
-            despawn_after: DespawnAfter(1.0),
-            pbr: PbrBundle {
-                mesh: enemy_resources.blood_mesh.clone(),
-                material: enemy_resources.blood_material.clone(),
-                ..Default::default()
-            },
-            rigid_body: RigidBodyBundle {
-                body_type: RigidBodyType::Dynamic,
-                position: position.into(),
-                velocity: RigidBodyVelocity {
-                    linvel: (direction * 5.0).into(),
+fn spawn_enemy_blood_splatters(
+    mut commands: Commands,
+    enemy_resources: Res<EnemyResources>,
+    mut random: ResMut<Random>,
+    mut enemy_hit_events: EventReader<EnemyHitEvent>,
+) {
+    for enemy_hit_event in enemy_hit_events.iter() {
+        for _ in 0..32 {
+            let rotation = UnitQuaternion::from_euler_angles(
+                random.generator.gen_range(-PI..=PI),
+                0.0,
+                random.generator.gen_range(-PI..=PI),
+            );
+            let direction = rotation * Vector::z();
+
+            commands.spawn_bundle(EnemyBloodSplatterBundle {
+                despawn_after: DespawnAfter(random.generator.gen_range(1.0..=2.0)),
+                pbr: PbrBundle {
+                    mesh: enemy_resources.blood_mesh.clone(),
+                    material: enemy_resources.blood_material.clone(),
                     ..Default::default()
                 },
-                ..Default::default()
-            },
-            collider: ColliderBundle {
-                shape: enemy_resources.blood_shape.clone(),
-                flags: ColliderFlags {
-                    collision_groups: InteractionGroups::new(1 << 3, !((1 << 1) | (1 << 2))),
+                rigid_body: RigidBodyBundle {
+                    body_type: RigidBodyType::Dynamic,
+                    position: enemy_hit_event.position.into(),
+                    velocity: RigidBodyVelocity {
+                        linvel: direction * 5.0,
+                        ..Default::default()
+                    },
                     ..Default::default()
                 },
-                ..Default::default()
-            },
-            rigid_body_position_sync: RigidBodyPositionSync::Discrete,
-        });
+                collider: ColliderBundle {
+                    shape: enemy_resources.blood_shape.clone(),
+                    flags: ColliderFlags {
+                        collision_groups: InteractionGroups::new(
+                            PhysicsFlags::EFFECT.bits(),
+                            PhysicsFlags::ENVIRONMENT.bits(),
+                        ),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                rigid_body_position_sync: RigidBodyPositionSync::Discrete,
+            });
+        }
     }
 }
