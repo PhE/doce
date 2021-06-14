@@ -103,6 +103,7 @@ fn enemy_hit(
             &mut Health,
             &mut RigidBodyVelocity,
             &mut RigidBodyMassProps,
+            &mut ColliderFlags,
         )>,
     )>,
 ) {
@@ -122,6 +123,7 @@ fn enemy_hit(
         let mut enemy_health: Mut<Health>;
         let mut enemy_velocity: Mut<RigidBodyVelocity>;
         let mut enemy_mass_props: Mut<RigidBodyMassProps>;
+        let mut enemy_flags: Mut<ColliderFlags>;
 
         let projectile_query = query_set.q0();
 
@@ -139,7 +141,7 @@ fn enemy_hit(
 
         let enemy_query = query_set.q1_mut();
 
-        if let Ok((behavior, health, velocity, mass_props)) =
+        if let Ok((behavior, health, velocity, mass_props, flags)) =
             enemy_query.get_mut(collider1.entity())
         {
             enemy_entity = collider1.entity();
@@ -147,7 +149,8 @@ fn enemy_hit(
             enemy_health = health;
             enemy_velocity = velocity;
             enemy_mass_props = mass_props;
-        } else if let Ok((behavior, health, velocity, mass_props)) =
+            enemy_flags = flags;
+        } else if let Ok((behavior, health, velocity, mass_props, flags)) =
             enemy_query.get_mut(collider2.entity())
         {
             enemy_entity = collider2.entity();
@@ -155,6 +158,7 @@ fn enemy_hit(
             enemy_health = health;
             enemy_velocity = velocity;
             enemy_mass_props = mass_props;
+            enemy_flags = flags;
         } else {
             continue;
         }
@@ -183,6 +187,7 @@ fn enemy_hit(
                 projectile_velocity.linvel.normalize() * 10.0,
                 projectile_transform.translation.into(),
             );
+            // enemy_flags.collision_groups.filter &= !(1 << 1);
         }
     }
 }
@@ -213,12 +218,22 @@ fn enemy_spawn(
                 health: Health(100.0),
                 rigid_body: RigidBodyBundle {
                     body_type: RigidBodyType::Dynamic,
-                    mass_properties: RigidBodyMassPropsFlags::ROTATION_LOCKED.into(),
                     position: position.into(),
+                    mass_properties: RigidBodyMassPropsFlags::ROTATION_LOCKED.into(),
+                    damping: RigidBodyDamping {
+                        linear_damping: 1.0,
+                        angular_damping: 1.0,
+                    },
                     ..Default::default()
                 },
                 collider: ColliderBundle {
                     shape: resources.enemy_shape.clone(),
+                    material: ColliderMaterial {
+                        friction: 1.0,
+                        friction_combine_rule: CoefficientCombineRule::Max,
+                        restitution: 0.0,
+                        restitution_combine_rule: CoefficientCombineRule::Min,
+                    },
                     flags: ColliderFlags {
                         collision_groups: InteractionGroups::new(1 << 1, u32::MAX),
                         ..Default::default()
@@ -344,7 +359,7 @@ fn spawn_blood_splatters(
             collider: ColliderBundle {
                 shape: enemy_resources.blood_shape.clone(),
                 flags: ColliderFlags {
-                    collision_groups: InteractionGroups::new(1 << 3, !(1 << 2)),
+                    collision_groups: InteractionGroups::new(1 << 3, !((1 << 1) | (1 << 2))),
                     ..Default::default()
                 },
                 ..Default::default()
