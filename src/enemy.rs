@@ -1,8 +1,9 @@
-use std::f32::consts::PI;
+use std::{f32::consts::PI, time::Duration};
 
 use bevy::{core::FixedTimestep, math::Vec3Swizzles, prelude::*, render::mesh::shape};
+use bevy_easings::{Ease, EaseFunction};
 use bevy_rapier3d::{
-    na::{distance, UnitQuaternion},
+    na::{distance, RealField},
     prelude::*,
 };
 use rand::Rng;
@@ -34,7 +35,17 @@ impl Plugin for EnemyPlugin {
                     .with_run_criteria(FixedTimestep::step(1.0))
                     .with_system(enemy_director.system()),
             )
-            .add_system_to_stage(CoreStage::PostUpdate, spawn_enemy_blood_splatters.system());
+            .add_system_to_stage(CoreStage::PostUpdate, spawn_enemy_blood_splatters.system())
+            .add_system_to_stage(
+                CoreStage::PostUpdate,
+                enemy_attach_cooldown
+                    .system()
+                    .label("enemy_attack_cooldown"),
+            )
+            .add_system_to_stage(
+                CoreStage::PostUpdate,
+                enemy_attack.system().after("enemy_attack_cooldown"),
+            );
     }
 }
 
@@ -62,7 +73,9 @@ pub struct EnemyBloodSplatterBundle {
     pub rigid_body_position_sync: RigidBodyPositionSync,
 }
 
-pub struct Enemy;
+pub struct Enemy {
+    pub attack_cooldown: f32,
+}
 
 #[derive(Debug)]
 pub enum EnemyBehavior {
@@ -190,7 +203,9 @@ fn enemy_spawn(
 
         commands
             .spawn_bundle(EnemyBundle {
-                enemy: Enemy,
+                enemy: Enemy {
+                    attack_cooldown: 0.0,
+                },
                 behavior: EnemyBehavior::Idle,
                 health: Health(100.0),
                 rigid_body: RigidBodyBundle {
@@ -287,19 +302,87 @@ fn enemy_director(
 
 fn enemy_movement(
     character_query: Query<&Transform, With<MainCharacter>>,
-    mut enemy_query: Query<(&EnemyBehavior, &RigidBodyPosition, &mut RigidBodyVelocity)>,
+    mut enemy_query: Query<(
+        &EnemyBehavior,
+        &mut RigidBodyPosition,
+        &mut RigidBodyVelocity,
+    )>,
 ) {
-    for (behavior, position, mut velocity) in enemy_query.iter_mut() {
-        match behavior {
-            EnemyBehavior::Wander(direction) => velocity.linvel = (*direction * 0.5).into(),
+    for (behavior, mut position, mut velocity) in enemy_query.iter_mut() {
+        match *behavior {
+            EnemyBehavior::Wander(direction) => {
+                position.position.rotation = Rotation::from_axis_angle(
+                    &UnitVector::new_unchecked(Vector::y()),
+                    RealField::atan2(direction.x, direction.z),
+                );
+                velocity.linvel = position.position.rotation * vector!(0.0, 0.0, 0.5);
+            }
             EnemyBehavior::Attack(character) => {
-                let character_transform = character_query.get(*character).unwrap();
-                let direction = (character_transform.translation
-                    - position.position.translation.into())
-                .normalize();
-                velocity.linvel = (direction * 1.0).into();
+                let character_transform = character_query.get(character).unwrap();
+                let direction =
+                    character_transform.translation - position.position.translation.into();
+
+                position.position.rotation = Rotation::from_axis_angle(
+                    &UnitVector::new_unchecked(Vector::y()),
+                    RealField::atan2(direction.x, direction.z),
+                );
+
+                if direction.length() > 1.1 {
+                    velocity.linvel = position.position.rotation * vector!(0.0, 0.0, 1.0);
+                } else {
+                    velocity.linvel = Vector::zeros();
+                }
             }
             _ => (),
+        }
+    }
+}
+
+fn enemy_attack(
+    mut commands: Commands,
+    character_query: Query<&Transform, With<MainCharacter>>,
+    mut enemy_query: Query<(&mut Enemy, &EnemyBehavior, &Transform, &Children)>,
+) {
+    for (mut enemy, enemy_behavior, enemy_transform, enemy_children) in enemy_query.iter_mut() {
+        if let EnemyBehavior::Attack(character_entity) = *enemy_behavior {
+            let character_transform = character_query.get(character_entity).unwrap();
+
+            if enemy.attack_cooldown > 0.0
+                || Vec3::distance(enemy_transform.translation, character_transform.translation)
+                    > 1.2
+            {
+                continue;
+            }
+
+            enemy.attack_cooldown = 1.0;
+
+            let enemy_model_entity = enemy_children[0];
+
+            commands.entity(enemy_model_entity).insert(
+                Transform::from_xyz(0.0, 1.0, 0.0)
+                    .ease_to(
+                        Transform::from_xyz(0.0, 1.0, 0.2),
+                        EaseFunction::BackIn,
+                        bevy_easings::EasingType::Once {
+                            duration: Duration::from_secs_f32(0.1),
+                        },
+                    )
+                    .ease_to(
+                        Transform::from_xyz(0.0, 1.0, 0.0),
+                        EaseFunction::CubicOut,
+                        bevy_easings::EasingType::Once {
+                            duration: Duration::from_secs_f32(0.1),
+                        },
+                    ),
+            );
+        }
+    }
+}
+
+fn enemy_attach_cooldown(time: Res<Time>, mut query: Query<&mut Enemy>) {
+    for mut enemy in query.iter_mut() {
+        if enemy.attack_cooldown > 0.0 {
+            enemy.attack_cooldown -= time.delta_seconds();
         }
     }
 }
@@ -345,7 +428,7 @@ fn spawn_enemy_blood_splatters(
 ) {
     for enemy_hit_event in enemy_hit_events.iter() {
         for _ in 0..32 {
-            let rotation = UnitQuaternion::from_euler_angles(
+            let rotation = Rotation::from_euler_angles(
                 random.generator.gen_range(-PI..=PI),
                 0.0,
                 random.generator.gen_range(-PI..=PI),

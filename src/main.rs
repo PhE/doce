@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use bevy::{
     app::AppExit,
     math::Vec4Swizzles,
@@ -8,6 +10,7 @@ use bevy::{
         mesh::shape,
     },
 };
+use bevy_easings::EasingsPlugin;
 use bevy_egui::EguiPlugin;
 use bevy_rapier3d::prelude::*;
 
@@ -54,11 +57,17 @@ bitflags! {
 fn main() {
     App::build()
         .add_plugins(DefaultPlugins)
+        .add_plugin(EasingsPlugin)
         .add_plugin(EguiPlugin)
-        // .add_plugin(RapierPhysicsPlugin::<NoUserData>::default())
         .add_plugin(PhysicsPlugin::<NoUserData>::default())
-        // .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin::default())
-        // .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+        .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin {
+            wait_duration: Duration::from_secs(10),
+            filter: Some(vec![
+                bevy::diagnostic::FrameTimeDiagnosticsPlugin::FRAME_TIME,
+            ]),
+            ..Default::default()
+        })
+        .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
         .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
         .add_plugin(RandomPlugin)
@@ -536,10 +545,10 @@ fn game_main_character_input_record(
     game_replay.tick = *tick;
 
     for movement in query.iter() {
-        info!(
-            "Tick {} recorded movement {}",
-            tick.0, movement.want_to_move
-        );
+        // info!(
+        //     "Tick {} recorded movement {}",
+        //     tick.0, movement.want_to_move
+        // );
         game_replay.main_character_inputs.push(MainCharacterInput {
             tick: *tick,
             movement: movement.want_to_move,
