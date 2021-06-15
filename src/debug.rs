@@ -41,7 +41,10 @@ fn debug_simulation_state(
     mut app_state: ResMut<State<AppState>>,
 ) {
     for event in debug_simulation_state_events.iter() {
-        let transform = query.single().unwrap();
+        let transform = match query.single() {
+            Ok(o) => o,
+            Err(_) => continue,
+        };
 
         match event {
             DebugSimulationStateEvent::Record => {

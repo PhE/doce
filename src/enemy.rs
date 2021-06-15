@@ -23,7 +23,13 @@ impl Plugin for EnemyPlugin {
                 SystemSet::on_update(AppState::InGame)
                     .with_system(enemy_movement.system())
                     .with_system(enemy_hit.system().label("hit_enemy"))
-                    .with_system(damage_enemy.system().after("hit_enemy")),
+                    .with_system(damage_enemy.system().after("hit_enemy"))
+                    .with_system(
+                        enemy_attack_cooldown
+                            .system()
+                            .label("enemy_attack_cooldown"),
+                    )
+                    .with_system(enemy_attack.system().after("enemy_attack_cooldown")),
             )
             .add_system_set(
                 SystemSet::on_update(AppState::InGame)
@@ -35,17 +41,7 @@ impl Plugin for EnemyPlugin {
                     .with_run_criteria(FixedTimestep::step(1.0))
                     .with_system(enemy_director.system()),
             )
-            .add_system_to_stage(CoreStage::PostUpdate, spawn_enemy_blood_splatters.system())
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                enemy_attach_cooldown
-                    .system()
-                    .label("enemy_attack_cooldown"),
-            )
-            .add_system_to_stage(
-                CoreStage::PostUpdate,
-                enemy_attack.system().after("enemy_attack_cooldown"),
-            );
+            .add_system_to_stage(CoreStage::PostUpdate, spawn_enemy_blood_splatters.system());
     }
 }
 
@@ -340,12 +336,13 @@ fn enemy_movement(
 
 fn enemy_attack(
     mut commands: Commands,
-    character_query: Query<&Transform, With<MainCharacter>>,
+    mut character_query: Query<(&mut Health, &Transform), With<MainCharacter>>,
     mut enemy_query: Query<(&mut Enemy, &EnemyBehavior, &Transform, &Children)>,
 ) {
     for (mut enemy, enemy_behavior, enemy_transform, enemy_children) in enemy_query.iter_mut() {
         if let EnemyBehavior::Attack(character_entity) = *enemy_behavior {
-            let character_transform = character_query.get(character_entity).unwrap();
+            let (mut character_health, character_transform) =
+                character_query.get_mut(character_entity).unwrap();
 
             if enemy.attack_cooldown > 0.0
                 || Vec3::distance(enemy_transform.translation, character_transform.translation)
@@ -354,6 +351,7 @@ fn enemy_attack(
                 continue;
             }
 
+            character_health.0 -= 5.0;
             enemy.attack_cooldown = 1.0;
 
             let enemy_model_entity = enemy_children[0];
@@ -379,7 +377,7 @@ fn enemy_attack(
     }
 }
 
-fn enemy_attach_cooldown(time: Res<Time>, mut query: Query<&mut Enemy>) {
+fn enemy_attack_cooldown(time: Res<Time>, mut query: Query<&mut Enemy>) {
     for mut enemy in query.iter_mut() {
         if enemy.attack_cooldown > 0.0 {
             enemy.attack_cooldown -= time.delta_seconds();

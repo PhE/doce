@@ -19,6 +19,7 @@ impl Plugin for InitAppStatePlugin {
 pub enum AppState {
     Cleanup,
     InGame,
+    GameOver,
     MainMenu,
     Replay,
 }

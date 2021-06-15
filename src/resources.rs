@@ -26,6 +26,8 @@ pub struct UIResources {
     pub transparent: Handle<ColorMaterial>,
     pub white: Handle<ColorMaterial>,
     pub black: Handle<ColorMaterial>,
+    pub red: Handle<ColorMaterial>,
+    pub green: Handle<ColorMaterial>,
 }
 
 pub struct InitResourcesPlugin;
@@ -145,5 +147,7 @@ fn init_ui_resources(
         transparent: materials.add(Color::NONE.into()),
         white: materials.add(Color::WHITE.into()),
         black: materials.add(Color::BLACK.into()),
+        red: materials.add(Color::RED.into()),
+        green: materials.add(Color::GREEN.into()),
     });
 }

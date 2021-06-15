@@ -105,6 +105,7 @@ fn main() {
                 )
                 .with_system(main_character_rotation.system().label("character_rotation"))
                 .with_system(main_character_shoot.system().after("character_rotation"))
+                .with_system(main_character_health.system())
                 .with_system(game_save.exclusive_system()),
         )
         .add_system_set(SystemSet::on_exit(AppState::InGame).with_system(game_cleanup.system()))
@@ -131,6 +132,12 @@ fn main() {
                         .after("character_input"),
                 ),
         )
+        // GameOver
+        .add_system_set(
+            SystemSet::on_enter(AppState::GameOver).with_system(game_over_setup.system()),
+        )
+        .add_system_set(SystemSet::on_update(AppState::GameOver).with_system(game_ui.system()))
+        // PostUpdate
         .add_system_to_stage(CoreStage::PostUpdate, game_camera_movement.system())
         // Last
         .add_system_to_stage(CoreStage::Last, game_increment_tick.system())
@@ -369,6 +376,50 @@ fn game_setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
                     });
                 });
         });
+
+    commands
+        .spawn_bundle(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                position: Rect::all(Val::Px(0.0)),
+                flex_direction: FlexDirection::ColumnReverse,
+                justify_content: JustifyContent::FlexEnd,
+                align_items: AlignItems::FlexStart,
+                ..Default::default()
+            },
+            material: ui_resources.transparent.clone(),
+            ..Default::default()
+        })
+        .with_children(|parent| {
+            // Health bar
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        size: Size::new(Val::Px(400.0), Val::Px(40.0)),
+                        margin: Rect {
+                            left: Val::Px(10.0),
+                            bottom: Val::Px(10.0),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    material: ui_resources.white.clone(),
+                    ..Default::default()
+                })
+                .with_children(|parent| {
+                    parent
+                        .spawn_bundle(NodeBundle {
+                            style: Style {
+                                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                                min_size: Size::new(Val::Percent(0.0), Val::Percent(100.0)),
+                                ..Default::default()
+                            },
+                            material: ui_resources.green.clone(),
+                            ..Default::default()
+                        })
+                        .insert(HealthBar);
+                });
+        });
 }
 
 fn game_setup_main_character(mut commands: Commands, pbr_resources: Res<PbrResources>) {
@@ -391,6 +442,7 @@ fn game_setup_main_character(mut commands: Commands, pbr_resources: Res<PbrResou
             walk_speed: 2.0,
             run_speed: 4.0,
         })
+        .insert(Health(100.0))
         .insert_bundle(RigidBodyBundle {
             body_type: RigidBodyType::Dynamic,
             mass_properties: RigidBodyMassPropsFlags::ROTATION_LOCKED.into(),
@@ -706,6 +758,23 @@ fn main_character_shoot(
     }
 }
 
+fn main_character_health(
+    mut app_state: ResMut<State<AppState>>,
+    character_query: Query<&Health, (With<MainCharacter>, Changed<Health>)>,
+    mut health_bar_query: Query<&mut Style, With<HealthBar>>,
+) {
+    for character_health in character_query.iter() {
+        if character_health.0 <= 0.0 {
+            app_state.set(AppState::GameOver).unwrap();
+            return;
+        }
+
+        for mut style in health_bar_query.iter_mut() {
+            style.size.width = Val::Percent(character_health.0);
+        }
+    }
+}
+
 fn game_camera_movement(
     mut query_set: QuerySet<(
         Query<(&MainCharacter, &Transform)>,
@@ -738,8 +807,16 @@ fn game_save(world: &mut World) {
     }
 }
 
-fn game_cleanup(mut debug_events: EventWriter<DebugSimulationStateEvent>) {
+fn game_cleanup(
+    mut commands: Commands,
+    mut debug_events: EventWriter<DebugSimulationStateEvent>,
+    query: Query<Entity, With<MainCharacter>>,
+) {
     debug_events.send(DebugSimulationStateEvent::Record);
+
+    for entity in query.iter() {
+        commands.entity(entity).despawn_recursive();
+    }
 }
 
 fn game_increment_tick(
@@ -764,6 +841,110 @@ fn replay_setup(mut tick: ResMut<Tick>, mut game_replay: ResMut<GameReplay>) {
     game_replay.main_character_inputs_index = 0;
 }
 
+fn game_over_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
+    let button_bundle = ButtonBundle {
+        style: Style {
+            margin: Rect::all(Val::Px(5.0)),
+            justify_content: JustifyContent::Center,
+            align_items: AlignItems::Center,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+
+    commands
+        .spawn_bundle(NodeBundle {
+            style: Style {
+                position_type: PositionType::Absolute,
+                position: Rect::all(Val::Px(0.0)),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..Default::default()
+            },
+            material: ui_resources.transparent.clone(),
+            ..Default::default()
+        })
+        .with_children(|parent| {
+            parent
+                .spawn_bundle(NodeBundle {
+                    style: Style {
+                        padding: Rect::all(Val::Px(20.0)),
+                        flex_direction: FlexDirection::ColumnReverse,
+                        justify_content: JustifyContent::Center,
+                        align_items: AlignItems::Center,
+                        ..Default::default()
+                    },
+                    material: ui_resources.red.clone(),
+                    ..Default::default()
+                })
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        style: Style {
+                            margin: Rect {
+                                bottom: Val::Px(20.0),
+                                ..Default::default()
+                            },
+                            ..Default::default()
+                        },
+                        text: Text::with_section(
+                            "Game Over",
+                            TextStyle {
+                                font: ui_resources.font.clone(),
+                                font_size: 64.0,
+                                color: Color::WHITE,
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+
+                    parent
+                        .spawn_bundle(button_bundle.clone())
+                        .insert(ButtonType::RestartGame)
+                        .with_children(|parent| {
+                            parent.spawn_bundle(TextBundle {
+                                style: Style {
+                                    margin: Rect::all(Val::Px(5.0)),
+                                    ..Default::default()
+                                },
+                                text: Text::with_section(
+                                    "Restart Game",
+                                    TextStyle {
+                                        font: ui_resources.font.clone(),
+                                        font_size: 24.0,
+                                        color: Color::BLACK,
+                                    },
+                                    Default::default(),
+                                ),
+                                ..Default::default()
+                            });
+                        });
+
+                    parent
+                        .spawn_bundle(button_bundle.clone())
+                        .insert(ButtonType::Replay)
+                        .with_children(|parent| {
+                            parent.spawn_bundle(TextBundle {
+                                style: Style {
+                                    margin: Rect::all(Val::Px(5.0)),
+                                    ..Default::default()
+                                },
+                                text: Text::with_section(
+                                    "Replay",
+                                    TextStyle {
+                                        font: ui_resources.font.clone(),
+                                        font_size: 24.0,
+                                        color: Color::BLACK,
+                                    },
+                                    Default::default(),
+                                ),
+                                ..Default::default()
+                            });
+                        });
+                });
+        });
+}
+
 struct MainCamera;
 
 #[derive(Clone, Copy)]
@@ -779,6 +960,8 @@ struct MainCharacterMovement {
 }
 
 pub struct Health(f32);
+
+pub struct HealthBar;
 
 enum ButtonType {
     Play,
