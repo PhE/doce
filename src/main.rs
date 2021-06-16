@@ -253,6 +253,7 @@ fn game_setup(
     mut commands: Commands,
     mut tick: ResMut<Tick>,
     mut rapier_config: ResMut<RapierConfiguration>,
+    asset_server: Res<AssetServer>,
 ) {
     tick.0 = 0;
 
@@ -267,6 +268,8 @@ fn game_setup(
         transform: Transform::from_xyz(0.0, 200.0, 400.0),
         ..Default::default()
     });
+
+    commands.spawn_scene(asset_server.load("models/low_poly_zombie/scene.gltf#Scene0"));
 }
 
 fn game_setup_replay(mut game_replay: ResMut<GameReplay>) {
