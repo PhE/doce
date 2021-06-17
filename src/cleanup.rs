@@ -1,10 +1,7 @@
-use bevy::app::Events;
 use bevy::prelude::*;
 use bevy_rapier3d::physics::{JointsEntityMap, ModificationTracker};
-use bevy_rapier3d::prelude::IntersectionEvent;
 use bevy_rapier3d::prelude::PhysicsPipeline;
 use bevy_rapier3d::rapier::dynamics::{CCDSolver, IslandManager, JointSet};
-use bevy_rapier3d::rapier::geometry::ContactEvent;
 use bevy_rapier3d::rapier::geometry::{BroadPhase, NarrowPhase};
 use bevy_rapier3d::rapier::pipeline::QueryPipeline;
 
@@ -46,8 +43,6 @@ fn cleanup_physics_states(
     mut island_manager: ResMut<IslandManager>,
     mut joint_set: ResMut<JointSet>,
     mut ccd_solver: ResMut<CCDSolver>,
-    mut intersection_events: ResMut<Events<IntersectionEvent>>,
-    mut contact_events: ResMut<Events<ContactEvent>>,
     mut joint_entity_map: ResMut<JointsEntityMap>,
     mut modification_tracker: ResMut<ModificationTracker>,
 ) {
@@ -62,8 +57,6 @@ fn cleanup_physics_states(
     *island_manager = IslandManager::new();
     *joint_set = JointSet::new();
     *ccd_solver = CCDSolver::new();
-    intersection_events.clear();
-    contact_events.clear();
     *joint_entity_map = Default::default();
     *modification_tracker = Default::default();
 }

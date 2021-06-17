@@ -1,6 +1,9 @@
 use std::{f32::consts::PI, time::Duration};
 
-use bevy::{core::FixedTimestep, math::Vec3Swizzles, prelude::*, render::mesh::shape};
+use bevy::{
+    core::FixedTimestep, math::Vec3Swizzles, prelude::*, render::mesh::shape,
+    tasks::ComputeTaskPool,
+};
 use bevy_easings::{Ease, EaseFunction};
 use bevy_rapier3d::{
     na::{distance, RealField},
@@ -174,7 +177,7 @@ fn enemy_hit(
             direction: UnitVector::new_normalize(projectile_velocity.linvel),
         });
 
-        commands.entity(projectile_entity).despawn_recursive();
+        commands.entity(projectile_entity).insert(DespawnAfter(0.0));
     }
 }
 
@@ -217,9 +220,9 @@ fn enemy_spawn(
                 collider: ColliderBundle {
                     shape: resources.enemy_shape.clone(),
                     material: ColliderMaterial {
-                        friction: 1.0,
+                        friction: 0.8,
                         friction_combine_rule: CoefficientCombineRule::Max,
-                        restitution: 0.0,
+                        restitution: 0.1,
                         restitution_combine_rule: CoefficientCombineRule::Min,
                     },
                     flags: ColliderFlags {
@@ -377,12 +380,16 @@ fn enemy_attack(
     }
 }
 
-fn enemy_attack_cooldown(time: Res<Time>, mut query: Query<&mut Enemy>) {
-    for mut enemy in query.iter_mut() {
+fn enemy_attack_cooldown(
+    pool: Res<ComputeTaskPool>,
+    time: Res<Time>,
+    mut query: Query<&mut Enemy>,
+) {
+    query.par_for_each_mut(&pool, 32, |mut enemy| {
         if enemy.attack_cooldown > 0.0 {
             enemy.attack_cooldown -= time.delta_seconds();
         }
-    }
+    });
 }
 
 fn damage_enemy(
@@ -410,7 +417,7 @@ fn damage_enemy(
             body_mass_props.flags = RigidBodyMassPropsFlags::empty();
             body_velocity.apply_impulse_at_point(
                 &body_mass_props,
-                enemy_hit_event.direction.scale(10.0),
+                enemy_hit_event.direction.scale(20.0),
                 enemy_hit_event.position,
             );
             collider_flags.collision_groups.filter = PhysicsFlags::ENVIRONMENT.bits();
