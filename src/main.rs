@@ -1,7 +1,6 @@
 use std::{f32::consts::PI, time::Duration};
 
 use bevy::{
-    app::AppExit,
     math::Vec4Swizzles,
     prelude::*,
     reflect::TypeRegistry,
@@ -12,7 +11,8 @@ use bevy::{
 };
 use bevy_easings::EasingsPlugin;
 use bevy_egui::EguiPlugin;
-use bevy_rapier3d::{na::UnitQuaternion, prelude::*};
+use bevy_inspector_egui::WorldInspectorPlugin;
+use bevy_rapier3d::prelude::*;
 
 #[macro_use]
 extern crate bitflags;
@@ -23,7 +23,9 @@ mod debug;
 mod despawn;
 mod enemy;
 mod main_menu;
+mod party;
 mod physics;
+mod player;
 mod random;
 mod resources;
 mod sound;
@@ -35,16 +37,15 @@ use cleanup::{CleanupConfig, CleanupPlugin};
 use debug::{DebugPlugin, DebugRigidBodyIndex, DebugSimulationStateEvent};
 use despawn::DespawnPlugin;
 use enemy::EnemyPlugin;
+use libp2p::Multiaddr;
 use main_menu::MainMenuPlugin;
 use physics::PhysicsPlugin;
-use rand::Rng;
 use random::{Random, RandomPlugin};
 use resources::{
     GameReplay, InitResourcesPlugin, MainCharacterInput, PbrResources, Tick, UIResources,
 };
-use sound::SoundResources;
 use ui::UIPlugin;
-use weapons::{ProjectileBundle, WeaponsPlugin};
+use weapons::WeaponsPlugin;
 
 use crate::{
     sound::InitSoundPlugin,
@@ -70,6 +71,7 @@ fn main() {
         .add_plugins(DefaultPlugins)
         .add_plugin(EasingsPlugin)
         .add_plugin(EguiPlugin)
+        .add_plugin(WorldInspectorPlugin::new())
         .add_plugin(PhysicsPlugin::<NoUserData>::default())
         .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin {
             wait_duration: Duration::from_secs(10),
@@ -265,6 +267,7 @@ fn game_setup(
     mut commands: Commands,
     mut tick: ResMut<Tick>,
     mut rapier_config: ResMut<RapierConfiguration>,
+    asset_server: Res<AssetServer>,
 ) {
     tick.0 = 0;
 
@@ -279,6 +282,16 @@ fn game_setup(
         transform: Transform::from_xyz(0.0, 200.0, 400.0),
         ..Default::default()
     });
+
+    commands
+        .spawn_bundle((
+            Transform::from_scale(5.0 * Vec3::ONE),
+            GlobalTransform::identity(),
+            Name::new("Zombie"),
+        ))
+        .with_children(|parent| {
+            parent.spawn_scene(asset_server.load("models/low_poly_zombie/scene.gltf#Scene0"));
+        });
 }
 
 fn game_setup_replay(mut game_replay: ResMut<GameReplay>) {
@@ -772,98 +785,6 @@ fn main_character_rotation(
     }
 }
 
-fn main_character_shoot(
-    mut projectile_shape: Local<Option<SharedShape>>,
-    mut commands: Commands,
-    audio: Res<Audio>,
-    sound_resources: Res<SoundResources>,
-    mut random: ResMut<Random>,
-    pbr_resources: Res<PbrResources>,
-    inputs: Res<Input<MouseButton>>,
-    mut query: Query<(
-        &Weapon,
-        &mut WeaponTrigger,
-        &mut WeaponAmmoCount,
-        &mut WeaponReloadTime,
-        &mut WeaponCooldownTime,
-        &GlobalTransform,
-    )>,
-) {
-    if let None = *projectile_shape {
-        *projectile_shape = Some(SharedShape::capsule(
-            point!(0.0, 0.0, -0.1),
-            point!(0.0, 0.0, 0.1),
-            0.1,
-        ));
-    }
-
-    if inputs.pressed(MouseButton::Left) {
-        for (
-            weapon,
-            mut weapon_trigger,
-            mut weapon_ammo_count,
-            mut weapon_reload_time,
-            mut weapon_cooldown_time,
-            weapon_transform,
-        ) in query.iter_mut()
-        {
-            if weapon_trigger.release_required
-                || weapon_reload_time.0 > 0.0
-                || weapon_cooldown_time.0 > 0.0
-            {
-                continue;
-            }
-
-            if weapon_ammo_count.0 <= 0 {
-                weapon_reload_time.0 = weapon.reload_time;
-                weapon_trigger.release_required = true;
-                continue;
-            }
-
-            weapon_ammo_count.0 -= 1;
-
-            if weapon_ammo_count.0 <= 0 {
-                weapon_reload_time.0 = weapon.reload_time;
-                weapon_trigger.release_required = true;
-            }
-
-            weapon_cooldown_time.0 = 1.0 / weapon.rate_of_file;
-
-            audio.play(sound_resources.pistol_shoot.clone());
-
-            let random_rotation = UnitQuaternion::from_euler_angles(
-                PI * 1.5 / 180.0,
-                0.0,
-                random.generator.gen_range(-PI..=PI),
-            );
-            let mut projectile_bundle = ProjectileBundle::default();
-            projectile_bundle.rigid_body.position.position = Isometry::from_parts(
-                weapon_transform.translation.into(),
-                weapon_transform.rotation.into(),
-            );
-            projectile_bundle.rigid_body.velocity = RigidBodyVelocity {
-                linvel: UnitQuaternion::from(weapon_transform.rotation)
-                    * random_rotation
-                    * Vector::z()
-                    * 100.0,
-                ..Default::default()
-            };
-            projectile_bundle.collider.shape = projectile_shape.as_ref().unwrap().clone();
-
-            commands
-                .spawn_bundle(projectile_bundle)
-                .with_children(|parent| {
-                    parent.spawn_bundle(PbrBundle {
-                        mesh: pbr_resources.projectile_mesh.clone(),
-                        material: pbr_resources.projectile_material.clone(),
-                        transform: Transform::identity().looking_at(Vec3::Y, Vec3::Z),
-                        ..Default::default()
-                    });
-                });
-        }
-    }
-}
-
 fn main_character_health(
     mut app_state: ResMut<State<AppState>>,
     character_query: Query<&Health, (With<MainCharacter>, Changed<Health>)>,
@@ -1070,6 +991,8 @@ pub struct Health(f32);
 pub struct HealthBar;
 
 enum ButtonType {
+    CreateLobby,
+    JoinLobby(Multiaddr),
     Play,
     Quit,
     RestartGame,

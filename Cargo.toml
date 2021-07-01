@@ -17,10 +17,12 @@ opt-level = 3
 codegen-units = 1
 
 [dependencies]
-bevy = "*"
+bevy = "0.5"
 bevy_easings = "*"
-bevy_egui = "*"
-bevy_rapier3d = { git = "https://github.com/dimforge/bevy_rapier", branch = "joint_removal", features = ["enhanced-determinism", "serde-serialize"] }
+bevy_egui = "0.5"
+bevy_rapier3d = { git = "https://github.com/dimforge/bevy_rapier", features = ["enhanced-determinism", "serde-serialize"] }
+bevy-inspector-egui = "*"
 bitflags = "*"
+libp2p = "*"
 rand = "*"
 rand_pcg = "*"

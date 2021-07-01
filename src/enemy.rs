@@ -34,11 +34,11 @@ impl Plugin for EnemyPlugin {
                     )
                     .with_system(enemy_attack.system().after("enemy_attack_cooldown")),
             )
-            .add_system_set(
-                SystemSet::on_update(AppState::InGame)
-                    .with_run_criteria(FixedTimestep::step(0.5))
-                    .with_system(enemy_spawn.system()),
-            )
+            // .add_system_set(
+            //     SystemSet::on_update(AppState::InGame)
+            //         .with_run_criteria(FixedTimestep::step(2.0))
+            //         .with_system(enemy_spawn.system()),
+            // )
             .add_system_set(
                 SystemSet::on_update(AppState::InGame)
                     .with_run_criteria(FixedTimestep::step(1.0))
@@ -189,7 +189,7 @@ fn enemy_spawn(
 ) {
     let count = query.iter().count();
 
-    if count < 100 {
+    if count < 10 {
         let mut position = Vec3::new(random.generator.gen_range(-24.5..24.5), 0.0, 24.5);
 
         if random.generator.gen_bool(0.5) {

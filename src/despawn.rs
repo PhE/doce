@@ -10,12 +10,12 @@ impl Plugin for DespawnPlugin {
 
 pub struct DespawnAfter(pub f32);
 
-fn despawn(mut commands: Commands, time: Res<Time>, mut query: Query<(Entity, &mut DespawnAfter)>) {
-    for (entity, mut despawn_after) in query.iter_mut() {
+fn despawn(mut commands: Commands, time: Res<Time>, query: Query<(Entity, &mut DespawnAfter)>) {
+    query.for_each_mut(|(entity, mut despawn_after)| {
         despawn_after.0 -= time.delta_seconds();
 
         if despawn_after.0 <= 0.0 {
             commands.entity(entity).despawn_recursive();
         }
-    }
+    });
 }

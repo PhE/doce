@@ -1,6 +1,15 @@
-use bevy::prelude::*;
+use bevy::{app::AppExit, prelude::*};
+use rand::Rng;
 
-use crate::*;
+use crate::{
+    app_state::AppState,
+    cleanup::CleanupConfig,
+    party::{Party, PartyNetwork},
+    player::Player,
+    random::Random,
+    resources::UIResources,
+    ButtonType,
+};
 
 pub struct MainMenuPlugin;
 
@@ -42,6 +51,46 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
         .with_children(|parent| {
             parent
                 .spawn_bundle(button_bundle.clone())
+                .insert(ButtonType::CreateLobby)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            "Create Lobby",
+                            TextStyle {
+                                font: ui_resources.font.clone(),
+                                font_size: 40.0,
+                                color: Color::BLACK,
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+
+            if let Some(addr) = std::env::args().nth(1) {
+                let addr = addr.parse().unwrap();
+
+                parent
+                    .spawn_bundle(button_bundle.clone())
+                    .insert(ButtonType::JoinLobby(addr))
+                    .with_children(|parent| {
+                        parent.spawn_bundle(TextBundle {
+                            text: Text::with_section(
+                                "Join Lobby",
+                                TextStyle {
+                                    font: ui_resources.font.clone(),
+                                    font_size: 40.0,
+                                    color: Color::BLACK,
+                                },
+                                Default::default(),
+                            ),
+                            ..Default::default()
+                        });
+                    });
+            }
+
+            parent
+                .spawn_bundle(button_bundle.clone())
                 .insert(ButtonType::Play)
                 .with_children(|parent| {
                     parent.spawn_bundle(TextBundle {
@@ -79,8 +128,10 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
 }
 
 fn menu_update(
+    mut commands: Commands,
     mut state: ResMut<State<AppState>>,
     mut app_exit_events: EventWriter<AppExit>,
+    mut random: ResMut<Random>,
     mut cleanup_config: ResMut<CleanupConfig>,
     mut button_query: Query<(&Interaction, &ButtonType), (Changed<Interaction>, With<Button>)>,
 ) {
@@ -88,8 +139,36 @@ fn menu_update(
         match interaction {
             Interaction::Clicked => {
                 match button_type {
+                    ButtonType::CreateLobby => {
+                        let player = Player {
+                            name: format!("{:0x}", random.generator.gen::<u32>()),
+                        };
+
+                        commands.insert_resource(Party::new(player));
+                        commands.insert_resource(PartyNetwork::new());
+
+                        cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
+                        state.set(AppState::Cleanup).unwrap();
+                    }
+                    ButtonType::JoinLobby(addr) => {
+                        let player = Player {
+                            name: format!("{:0x}", random.generator.gen::<u32>()),
+                        };
+                        let network = PartyNetwork::new();
+
+                        {
+                            let mut swarm = network.swarm.lock().unwrap();
+                            libp2p::Swarm::dial_addr(&mut swarm, addr.clone()).unwrap();
+                        }
+
+                        commands.insert_resource(Party::new(player));
+                        commands.insert_resource(network);
+
+                        cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
+                        state.set(AppState::Cleanup).unwrap();
+                    }
                     ButtonType::Play => {
-                        cleanup_config.next_state_after_cleanup = Some(AppState::InGame);
+                        cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
                         state.set(AppState::Cleanup).unwrap();
                     }
                     ButtonType::Quit => app_exit_events.send(AppExit),
