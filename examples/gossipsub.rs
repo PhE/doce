@@ -46,6 +46,7 @@
 //!
 //! The two nodes should then connect.
 
+use futures::select;
 use libp2p::futures::executor::block_on;
 use libp2p::futures::prelude::*;
 use libp2p::gossipsub::{IdentTopic as Topic, MessageAuthenticity};
@@ -94,11 +95,12 @@ fn main() {
         println!("Dialed {:?}", to_dial)
     }
 
-    // Kick it off
-    loop {
-        match swarm.next_event().now_or_never() {
-            Some(event) => println!("Event: {:?}", event),
-            None => (),
+    block_on(async move {
+        // Kick it off
+        loop {
+            select! {
+                event = swarm.next_event().fuse() => println!("Event: {:?}", event),
+            }
         }
-    }
+    });
 }

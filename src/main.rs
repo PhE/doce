@@ -23,6 +23,7 @@ mod debug;
 mod despawn;
 mod enemy;
 mod main_menu;
+mod network;
 mod party;
 mod physics;
 mod player;
@@ -47,13 +48,10 @@ use resources::{
 use ui::UIPlugin;
 use weapons::WeaponsPlugin;
 
-use crate::{
-    sound::InitSoundPlugin,
-    weapons::{
+use crate::{network::NetworkPlugin, sound::InitSoundPlugin, weapons::{
         Weapon, WeaponAmmoCount, WeaponBundle, WeaponCooldownTime, WeaponEnabled, WeaponFireMode,
         WeaponReloadTime, WeaponTrigger,
-    },
-};
+    }};
 
 bitflags! {
     struct PhysicsFlags: u32 {
@@ -81,6 +79,7 @@ fn main() {
             ..Default::default()
         })
         .add_plugin(bevy::diagnostic::FrameTimeDiagnosticsPlugin::default())
+        .add_plugin(NetworkPlugin)
         .add_plugin(InitAppStatePlugin(AppState::MainMenu))
         .add_plugin(InitResourcesPlugin)
         .add_plugin(InitSoundPlugin)

@@ -49,7 +49,7 @@
 //!
 //! The two nodes then connect.
 
-use std::sync::Mutex;
+use std::{thread, time::Duration};
 
 use libp2p::{
     floodsub::{self, Floodsub},
@@ -86,13 +86,13 @@ fn main() {
         println!("Dialed {:?}", to_dial)
     }
 
-    let swarm = Mutex::new(swarm);
-
     // Kick it off
     loop {
-        match swarm.lock().unwrap().next_event().now_or_never() {
+        match swarm.next_event().now_or_never() {
             Some(event) => println!("Event: {:?}", event),
             None => (),
         }
+
+        thread::sleep(Duration::from_secs_f32(0.01));
     }
 }

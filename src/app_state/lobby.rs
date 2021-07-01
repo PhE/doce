@@ -1,7 +1,6 @@
 use bevy::prelude::*;
-use libp2p::{futures::FutureExt, swarm::SwarmEvent};
 
-use crate::{party::PartyNetwork, resources::UIResources};
+use crate::resources::UIResources;
 
 use super::AppState;
 
@@ -9,8 +8,7 @@ pub struct LobbyPlugin;
 
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_system_set(SystemSet::on_enter(AppState::Lobby).with_system(setup_ui.system()))
-            .add_system(poll_party_network.system());
+        app.add_system_set(SystemSet::on_enter(AppState::Lobby).with_system(setup_ui.system()));
     }
 }
 
@@ -200,19 +198,4 @@ fn setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
                         });
                 });
         });
-}
-
-fn poll_party_network(party_network: Option<Res<PartyNetwork>>) {
-    if let Some(party_network) = party_network {
-        let mut party_network = party_network.swarm.lock().unwrap();
-
-        match party_network.next_event().now_or_never() {
-            Some(SwarmEvent::NewListenAddr(addr)) => info!("Listening to: {:?}", addr),
-            Some(SwarmEvent::ConnectionEstablished {
-                endpoint, peer_id, ..
-            }) => info!("Connected to peer {:?} at: {:?}", peer_id, endpoint),
-            Some(event) => info!("Swarm event: {:?}", event),
-            _ => (),
-        }
-    }
 }

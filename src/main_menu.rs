@@ -4,7 +4,8 @@ use rand::Rng;
 use crate::{
     app_state::AppState,
     cleanup::CleanupConfig,
-    party::{Party, PartyNetwork},
+    network::{NetworkManager, NetworkTopic},
+    party::Party,
     player::Player,
     random::Random,
     resources::UIResources,
@@ -129,6 +130,7 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
 
 fn menu_update(
     mut commands: Commands,
+    mut network_manager: ResMut<NetworkManager>,
     mut state: ResMut<State<AppState>>,
     mut app_exit_events: EventWriter<AppExit>,
     mut random: ResMut<Random>,
@@ -145,7 +147,8 @@ fn menu_update(
                         };
 
                         commands.insert_resource(Party::new(player));
-                        commands.insert_resource(PartyNetwork::new());
+
+                        network_manager.subscribe(NetworkTopic::new("chat"));
 
                         cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
                         state.set(AppState::Cleanup).unwrap();
@@ -154,15 +157,11 @@ fn menu_update(
                         let player = Player {
                             name: format!("{:0x}", random.generator.gen::<u32>()),
                         };
-                        let network = PartyNetwork::new();
-
-                        {
-                            let mut swarm = network.swarm.lock().unwrap();
-                            libp2p::Swarm::dial_addr(&mut swarm, addr.clone()).unwrap();
-                        }
 
                         commands.insert_resource(Party::new(player));
-                        commands.insert_resource(network);
+
+                        network_manager.dial(addr.clone());
+                        network_manager.subscribe(NetworkTopic::new("chat"));
 
                         cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
                         state.set(AppState::Cleanup).unwrap();

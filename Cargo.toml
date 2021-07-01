@@ -23,6 +23,27 @@ bevy_egui = "0.5"
 bevy_rapier3d = { git = "https://github.com/dimforge/bevy_rapier", features = ["enhanced-determinism", "serde-serialize"] }
 bevy-inspector-egui = "*"
 bitflags = "*"
-libp2p = "*"
+futures = "*"
+libp2p = { version = "*", default-features = false, features = [
+    "deflate",
+    "dns-async-std",
+    "floodsub",
+    "identify",
+    "kad",
+    "gossipsub",
+    "mdns",
+    "mplex",
+    "noise",
+    "ping",
+    "plaintext",
+    "pnet",
+    "relay",
+    "request-response",
+    "secp256k1",
+    "tcp-async-io",
+    "uds",
+    "websocket",
+    "yamux",
+]}
 rand = "*"
 rand_pcg = "*"

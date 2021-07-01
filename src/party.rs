@@ -1,11 +1,6 @@
-use std::{collections::HashMap, sync::Mutex, time::Duration};
+use std::collections::HashMap;
 
-use bevy::prelude::*;
-use libp2p::{
-    gossipsub::{Gossipsub, GossipsubConfigBuilder, IdentTopic, MessageAuthenticity},
-    identity::Keypair,
-    PeerId, Swarm,
-};
+use libp2p::PeerId;
 
 use crate::player::Player;
 
@@ -45,48 +40,5 @@ impl Party {
                 return;
             }
         }
-    }
-}
-
-pub struct PartyNetwork {
-    pub swarm: Mutex<Swarm<Gossipsub>>,
-}
-
-impl PartyNetwork {
-    pub fn new() -> Self {
-        let local_key = Keypair::generate_ed25519();
-        let local_peer_id = PeerId::from_public_key(local_key.public());
-        info!("Local peer ID: {:?}", local_peer_id);
-
-        let transport =
-            libp2p::futures::executor::block_on(libp2p::development_transport(local_key.clone()))
-                .unwrap();
-
-        // Create a Gossipsub topic
-        let topic = IdentTopic::new("test-net");
-
-        // Create a Swarm to manage peers and events
-        let mut swarm = {
-            // Set a custom gossipsub
-            let gossipsub_config = GossipsubConfigBuilder::default()
-                .heartbeat_interval(Duration::from_secs(10)) // This is set to aid debugging by not cluttering the log space
-                .build()
-                .expect("Valid config");
-            // build a gossipsub network behaviour
-            let mut gossipsub: Gossipsub =
-                Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config)
-                    .expect("Correct configuration");
-
-            // subscribes to our topic
-            gossipsub.subscribe(&topic).unwrap();
-
-            // build the swarm
-            libp2p::Swarm::new(transport, gossipsub, local_peer_id)
-        };
-
-        Swarm::listen_on(&mut swarm, "/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
-        let swarm = Mutex::new(swarm);
-
-        Self { swarm }
     }
 }
