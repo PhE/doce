@@ -66,7 +66,7 @@ impl FromWorld for NetworkManager {
         io_task_pool
             .spawn(async move {
                 let mut swarm = create_network_swarm();
-                    swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
+                swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
 
                 loop {
                     select! {
