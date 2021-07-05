@@ -1,6 +1,11 @@
 use bevy::prelude::*;
+use bevy_egui::{
+    egui::{self, widgets::Widget},
+    EguiContext,
+};
+use libp2p::gossipsub::GossipsubEvent;
 
-use crate::resources::UIResources;
+use crate::network::{NetworkEvent, NetworkManager, NetworkTopic};
 
 use super::AppState;
 
@@ -8,194 +13,124 @@ pub struct LobbyPlugin;
 
 impl Plugin for LobbyPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.add_system_set(SystemSet::on_enter(AppState::Lobby).with_system(setup_ui.system()));
+        app.add_event::<LobbyUIEvent>()
+            .insert_resource(LobbyUI {
+                current_chat_message: "".into(),
+                chat_messages: Vec::new(),
+            })
+            .add_system_set(
+                SystemSet::on_update(AppState::Lobby)
+                    .with_system(receive_chat_messages.system())
+                    .with_system(lobby_ui.system().label("lobby_ui"))
+                    .with_system(handle_lobby_ui_events.system().after("lobby_ui")),
+            );
     }
 }
 
-struct LobbyPlayerIndex(usize);
-
-struct LobbyPlayerState {
-    ready: bool,
+struct LobbyUI {
+    current_chat_message: String,
+    chat_messages: Vec<String>,
 }
 
-fn setup_ui(mut commands: Commands, ui_resources: Res<UIResources>) {
-    commands.spawn_bundle(UiCameraBundle::default());
+enum LobbyUIEvent {
+    SendChatMessage(String),
+}
 
-    commands
-        .spawn_bundle(NodeBundle {
-            style: Style {
-                flex_direction: FlexDirection::Row,
-                ..Default::default()
-            },
-            material: ui_resources.black.clone(),
-            ..Default::default()
-        })
-        .with_children(|parent| {
-            parent
-                .spawn_bundle(NodeBundle {
-                    style: Style {
-                        flex_direction: FlexDirection::ColumnReverse,
-                        ..Default::default()
-                    },
-                    material: ui_resources.transparent.clone(),
-                    ..Default::default()
-                })
-                .with_children(|parent| {
-                    for i in 0..4 {
-                        parent
-                            .spawn_bundle(NodeBundle {
-                                style: Style {
-                                    flex_direction: FlexDirection::Row,
-                                    align_items: AlignItems::Center,
-                                    margin: Rect::all(Val::Px(10.0)),
-                                    ..Default::default()
-                                },
-                                material: ui_resources.white.clone(),
-                                ..Default::default()
-                            })
-                            .with_children(|parent| {
-                                parent.spawn_bundle(TextBundle {
-                                    text: Text::with_section(
-                                        format!("Player_{}", i),
-                                        TextStyle {
-                                            font: ui_resources.font.clone(),
-                                            font_size: 24.0,
-                                            color: Color::BLACK,
-                                        },
-                                        Default::default(),
-                                    ),
-                                    ..Default::default()
-                                });
+fn lobby_ui(
+    egui_context: Res<EguiContext>,
+    mut lobby_ui: ResMut<LobbyUI>,
+    mut lobby_ui_events: EventWriter<LobbyUIEvent>,
+) {
+    egui::SidePanel::left("lobby", 400.0).show(egui_context.ctx(), |ui| {
+        ui.horizontal(|ui| {
+            ui.heading("Lobby");
+            ui.button("Leave");
+        });
 
-                                parent.spawn_bundle(TextBundle {
-                                    style: Style {
-                                        margin: Rect {
-                                            left: Val::Auto,
-                                            ..Default::default()
-                                        },
-                                        ..Default::default()
-                                    },
-                                    text: Text::with_section(
-                                        "READY",
-                                        TextStyle {
-                                            font: ui_resources.font.clone(),
-                                            font_size: 16.0,
-                                            color: Color::GREEN,
-                                        },
-                                        Default::default(),
-                                    ),
-                                    ..Default::default()
-                                });
-                            });
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.label("Player 1");
+            ui.checkbox(&mut true, "Ready");
+        });
+
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            ui.set_enabled(false);
+            ui.label("Player 2");
+            ui.checkbox(&mut true, "Ready");
+        });
+
+        ui.separator();
+
+        ui.horizontal(|ui| {
+            egui::Button::new("Start Game").enabled(false).ui(ui);
+        });
+
+        ui.separator();
+
+        let mut size = ui.available_size();
+        size.y = f32::max(size.y - 50.0, 0.0);
+
+        let (_, rect) = ui.allocate_space(size);
+
+        ui.allocate_ui_at_rect(rect, |ui| {
+            egui::ScrollArea::auto_sized()
+                .always_show_scroll(true)
+                .show(ui, |ui| {
+                    for message in &lobby_ui.chat_messages {
+                        ui.label(message);
                     }
-
-                    parent
-                        .spawn_bundle(NodeBundle {
-                            style: Style {
-                                flex_direction: FlexDirection::Row,
-                                align_items: AlignItems::Center,
-                                justify_content: JustifyContent::FlexEnd,
-                                ..Default::default()
-                            },
-                            material: ui_resources.transparent.clone(),
-                            ..Default::default()
-                        })
-                        .with_children(|parent| {
-                            parent
-                                .spawn_bundle(ButtonBundle {
-                                    style: Style {
-                                        margin: Rect {
-                                            top: Val::Px(10.0),
-                                            bottom: Val::Px(10.0),
-                                            left: Val::Px(10.0),
-                                            right: Val::Auto,
-                                        },
-                                        padding: Rect {
-                                            top: Val::Px(5.0),
-                                            bottom: Val::Px(5.0),
-                                            left: Val::Px(10.0),
-                                            right: Val::Px(10.0),
-                                        },
-                                        ..Default::default()
-                                    },
-                                    material: ui_resources.white.clone(),
-                                    ..Default::default()
-                                })
-                                .with_children(|parent| {
-                                    parent.spawn_bundle(TextBundle {
-                                        text: Text::with_section(
-                                            "LEAVE",
-                                            TextStyle {
-                                                font: ui_resources.font.clone(),
-                                                font_size: 16.0,
-                                                color: Color::RED,
-                                            },
-                                            Default::default(),
-                                        ),
-                                        ..Default::default()
-                                    });
-                                });
-
-                            parent
-                                .spawn_bundle(ButtonBundle {
-                                    style: Style {
-                                        margin: Rect::all(Val::Px(10.0)),
-                                        padding: Rect {
-                                            top: Val::Px(5.0),
-                                            bottom: Val::Px(5.0),
-                                            left: Val::Px(10.0),
-                                            right: Val::Px(10.0),
-                                        },
-                                        ..Default::default()
-                                    },
-                                    material: ui_resources.white.clone(),
-                                    ..Default::default()
-                                })
-                                .with_children(|parent| {
-                                    parent.spawn_bundle(TextBundle {
-                                        text: Text::with_section(
-                                            "READY",
-                                            TextStyle {
-                                                font: ui_resources.font.clone(),
-                                                font_size: 16.0,
-                                                color: Color::BLACK,
-                                            },
-                                            Default::default(),
-                                        ),
-                                        ..Default::default()
-                                    });
-                                });
-
-                            parent
-                                .spawn_bundle(ButtonBundle {
-                                    style: Style {
-                                        margin: Rect::all(Val::Px(10.0)),
-                                        padding: Rect {
-                                            top: Val::Px(5.0),
-                                            bottom: Val::Px(5.0),
-                                            left: Val::Px(10.0),
-                                            right: Val::Px(10.0),
-                                        },
-                                        ..Default::default()
-                                    },
-                                    material: ui_resources.white.clone(),
-                                    ..Default::default()
-                                })
-                                .with_children(|parent| {
-                                    parent.spawn_bundle(TextBundle {
-                                        text: Text::with_section(
-                                            "START",
-                                            TextStyle {
-                                                font: ui_resources.font.clone(),
-                                                font_size: 16.0,
-                                                color: Color::BLACK,
-                                            },
-                                            Default::default(),
-                                        ),
-                                        ..Default::default()
-                                    });
-                                });
-                        });
                 });
         });
+
+        ui.allocate_rect(rect, egui::Sense::hover());
+
+        ui.separator();
+
+        ui.with_layout(egui::Layout::right_to_left(), |ui| {
+            let button_clicked = ui.button("Send").clicked();
+            let text_edit_lost_focus =
+                egui::TextEdit::singleline(&mut lobby_ui.current_chat_message)
+                    .desired_width(ui.available_width())
+                    .ui(ui)
+                    .lost_focus();
+
+            if button_clicked || (text_edit_lost_focus && ui.input().key_pressed(egui::Key::Enter))
+            {
+                let message = std::mem::replace(&mut lobby_ui.current_chat_message, "".into());
+                lobby_ui.chat_messages.push(message.clone());
+                lobby_ui_events.send(LobbyUIEvent::SendChatMessage(message));
+            }
+        });
+    });
+}
+
+fn handle_lobby_ui_events(
+    mut lobby_ui_events: EventReader<LobbyUIEvent>,
+    mut network_manager: ResMut<NetworkManager>,
+) {
+    for event in lobby_ui_events.iter() {
+        match event {
+            LobbyUIEvent::SendChatMessage(message) => {
+                network_manager.publish(NetworkTopic::new("chat"), message.as_bytes());
+            }
+        }
+    }
+}
+
+fn receive_chat_messages(
+    mut lobby_ui: ResMut<LobbyUI>,
+    mut network_events: EventReader<NetworkEvent>,
+) {
+    for event in network_events.iter() {
+        if let NetworkEvent::Behaviour(GossipsubEvent::Message { message, .. }) = event {
+            if NetworkTopic::new("chat").hash() == message.topic {
+                lobby_ui
+                    .chat_messages
+                    .push(String::from_utf8(message.data.clone()).unwrap());
+            }
+        }
+    }
 }

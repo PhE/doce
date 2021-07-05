@@ -1,7 +1,8 @@
 use std::sync::Mutex;
 
 use bevy::{prelude::*, tasks::IoTaskPool};
-use futures::{executor::block_on, prelude::*, select};
+use futures::{channel::oneshot, executor::block_on, future::poll_fn, prelude::*, select};
+pub use libp2p::{core::connection::ListenerId, PeerId, TransportError};
 use libp2p::{
     development_transport,
     gossipsub::{
@@ -10,7 +11,7 @@ use libp2p::{
     },
     identity::Keypair,
     swarm::SwarmEvent,
-    Multiaddr, PeerId, Swarm,
+    Multiaddr, Swarm,
 };
 
 pub struct NetworkPlugin;
@@ -29,6 +30,25 @@ pub struct NetworkManager {
 }
 
 impl NetworkManager {
+    pub fn listen_on(
+        &mut self,
+        addr: NetworkAddress,
+    ) -> Result<ListenerId, TransportError<std::io::Error>> {
+        let (result_tx, result_rx) = oneshot::channel();
+
+        self.command_tx
+            .unbounded_send(NetworkCommand::ListenOn(addr, result_tx))
+            .unwrap();
+
+        block_on(result_rx).unwrap()
+    }
+
+    pub fn remove_listener(&mut self, listener_id: ListenerId) {
+        self.command_tx
+            .unbounded_send(NetworkCommand::RemoveListener(listener_id))
+            .unwrap();
+    }
+
     pub fn dial(&mut self, addr: NetworkAddress) {
         self.command_tx
             .unbounded_send(NetworkCommand::Dial(addr))
@@ -66,23 +86,17 @@ impl FromWorld for NetworkManager {
         io_task_pool
             .spawn(async move {
                 let mut swarm = create_network_swarm();
-                swarm.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
 
                 loop {
                     select! {
-                        command = command_rx.select_next_some() => {
-                            match command {
-                                NetworkCommand::Dial(addr) => swarm.dial_addr(addr).unwrap(),
-                                NetworkCommand::Subscribe(topic) => swarm.behaviour_mut().subscribe(&topic).map(|_| ()).unwrap(),
-                                NetworkCommand::Unsubscribe(topic) => swarm.behaviour_mut().unsubscribe(&topic).map(|_| ()).unwrap(),
-                                NetworkCommand::Publish(topic, data) => swarm.behaviour_mut().publish(topic, data).map(|_| ()).unwrap(),
-                            };
-                        }
+                        command = command_rx.select_next_some() => handle_network_command(&mut swarm, command),
                         event = swarm.next_event().fuse() => event_tx.send(event).unwrap(),
                     }
                 }
             })
             .detach();
+
+        block_on(poll_fn(|context| command_tx.poll_ready(context))).unwrap();
 
         Self {
             command_tx,
@@ -96,6 +110,11 @@ pub type NetworkEvent = SwarmEvent<GossipsubEvent, GossipsubHandlerError>;
 pub type NetworkTopic = IdentTopic;
 
 enum NetworkCommand {
+    ListenOn(
+        NetworkAddress,
+        oneshot::Sender<Result<ListenerId, TransportError<std::io::Error>>>,
+    ),
+    RemoveListener(ListenerId),
     Dial(NetworkAddress),
     Subscribe(NetworkTopic),
     Unsubscribe(NetworkTopic),
@@ -111,6 +130,27 @@ fn create_network_swarm() -> Swarm<Gossipsub> {
         Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config).unwrap();
 
     Swarm::new(transport, gossipsub, local_peer_id)
+}
+
+fn handle_network_command(swarm: &mut Swarm<Gossipsub>, command: NetworkCommand) {
+    match command {
+        NetworkCommand::ListenOn(addr, sender) => sender.send(swarm.listen_on(addr)).unwrap(),
+        NetworkCommand::RemoveListener(listener_id) => swarm.remove_listener(listener_id).unwrap(),
+        NetworkCommand::Dial(addr) => swarm.dial_addr(addr).unwrap(),
+        NetworkCommand::Subscribe(topic) => {
+            swarm.behaviour_mut().subscribe(&topic).map(|_| ()).unwrap()
+        }
+        NetworkCommand::Unsubscribe(topic) => swarm
+            .behaviour_mut()
+            .unsubscribe(&topic)
+            .map(|_| ())
+            .unwrap(),
+        NetworkCommand::Publish(topic, data) => swarm
+            .behaviour_mut()
+            .publish(topic, data)
+            .map(|_| ())
+            .unwrap(),
+    };
 }
 
 fn update_network(manager: Res<NetworkManager>, mut event_writer: EventWriter<NetworkEvent>) {

@@ -176,7 +176,9 @@ fn menu_update(
 
                         commands.insert_resource(Party::new(player));
 
+                        network_manager.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
                         network_manager.subscribe(NetworkTopic::new("chat"));
+                        network_manager.subscribe(NetworkTopic::new("joined"));
 
                         cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
                         state.set(AppState::Cleanup).unwrap();
@@ -188,8 +190,10 @@ fn menu_update(
 
                         commands.insert_resource(Party::new(player));
 
-                        network_manager.dial(main_menu_state.party_address.parse().unwrap());
+                        network_manager.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
                         network_manager.subscribe(NetworkTopic::new("chat"));
+                        network_manager.subscribe(NetworkTopic::new("joining"));
+                        network_manager.dial(main_menu_state.party_address.parse().unwrap());
 
                         cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
                         state.set(AppState::Cleanup).unwrap();
