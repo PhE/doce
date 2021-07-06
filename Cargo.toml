@@ -23,6 +23,7 @@ bevy_egui = "0.5"
 bevy_rapier3d = { git = "https://github.com/dimforge/bevy_rapier", features = ["enhanced-determinism", "serde-serialize"] }
 bevy-inspector-egui = "*"
 bitflags = "*"
+fake = "*"
 futures = "*"
 libp2p = { version = "*", default-features = false, features = [
     "deflate",
@@ -47,3 +48,5 @@ libp2p = { version = "*", default-features = false, features = [
 ]}
 rand = "*"
 rand_pcg = "*"
+serde = { version = "*", features = ["derive"] }
+serde_json = "*"

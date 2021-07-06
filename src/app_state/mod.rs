@@ -26,7 +26,9 @@ pub enum AppState {
     Cleanup,
     InGame,
     GameOver,
-    Lobby,
     MainMenu,
     Replay,
+    // Lobby
+    InLobby,
+    JoiningLobby,
 }

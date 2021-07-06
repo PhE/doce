@@ -1749,10 +1749,13 @@ dependencies = [
  "bevy_egui 0.5.0",
  "bevy_rapier3d",
  "bitflags",
+ "fake",
  "futures",
  "libp2p",
  "rand 0.8.4",
  "rand_pcg",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1931,6 +1934,15 @@ name = "event-listener"
 version = "2.5.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f7531096570974c3a9dcf9e4b8e1cede1ec26cf5046219fb3b9d897503b9be59"
+
+[[package]]
+name = "fake"
+version = "2.4.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "704749d52f737f28d7a632d4608db4005822efbb5a1c673c159f1193c9e63832"
+dependencies = [
+ "rand 0.8.4",
+]
 
 [[package]]
 name = "fake-simd"

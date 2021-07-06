@@ -1,12 +1,13 @@
 use bevy::{app::AppExit, prelude::*};
 use bevy_inspector_egui::{Inspectable, InspectorPlugin};
+use fake::{faker, Fake};
 
 use crate::{
     app_state::AppState,
     cleanup::CleanupConfig,
     network::{NetworkAddress, NetworkManager, NetworkTopic},
     party::Party,
-    player::Player,
+    player::{Player, PlayerId},
     resources::UIResources,
 };
 
@@ -15,7 +16,7 @@ pub struct MainMenuPlugin;
 impl Plugin for MainMenuPlugin {
     fn build(&self, app: &mut AppBuilder) {
         app.insert_resource(MainMenuState {
-            player_name: format!("{:0x}", rand::random::<u64>()),
+            player_name: faker::name::en::Name().fake(),
             party_address: "".into(),
         })
         .add_plugin(InspectorPlugin::<MainMenuState>::new_insert_manually())
@@ -171,31 +172,36 @@ fn menu_update(
                 match button {
                     MainMenuButton::CreateLobby => {
                         let player = Player {
+                            id: PlayerId::new(network_manager.local_peer_id()),
                             name: main_menu_state.player_name.clone(),
                         };
 
                         commands.insert_resource(Party::new(player));
 
-                        network_manager.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
-                        network_manager.subscribe(NetworkTopic::new("chat"));
-                        network_manager.subscribe(NetworkTopic::new("joined"));
+                        network_manager
+                            .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+                            .unwrap();
+                        network_manager.subscribe(NetworkTopic::new("join_request"));
 
-                        cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
+                        cleanup_config.next_state_after_cleanup = Some(AppState::InLobby);
                         state.set(AppState::Cleanup).unwrap();
                     }
                     MainMenuButton::JoinLobby => {
                         let player = Player {
+                            id: PlayerId::new(network_manager.local_peer_id()),
                             name: main_menu_state.player_name.clone(),
                         };
 
                         commands.insert_resource(Party::new(player));
 
-                        network_manager.listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap()).unwrap();
-                        network_manager.subscribe(NetworkTopic::new("chat"));
-                        network_manager.subscribe(NetworkTopic::new("joining"));
-                        network_manager.dial(main_menu_state.party_address.parse().unwrap());
+                        network_manager
+                            .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+                            .unwrap();
+                        network_manager.subscribe(NetworkTopic::new("join_accepted"));
+                        network_manager.subscribe(NetworkTopic::new("join_rejected"));
+                        network_manager.dial_addr(main_menu_state.party_address.parse().unwrap());
 
-                        cleanup_config.next_state_after_cleanup = Some(AppState::Lobby);
+                        cleanup_config.next_state_after_cleanup = Some(AppState::JoiningLobby);
                         state.set(AppState::Cleanup).unwrap();
                     }
                     MainMenuButton::Quit => app_exit_events.send(AppExit),

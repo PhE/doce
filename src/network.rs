@@ -6,8 +6,8 @@ pub use libp2p::{core::connection::ListenerId, PeerId, TransportError};
 use libp2p::{
     development_transport,
     gossipsub::{
-        error::GossipsubHandlerError, Gossipsub, GossipsubConfigBuilder, GossipsubEvent,
-        IdentTopic, MessageAuthenticity,
+        error::{GossipsubHandlerError, PublishError},
+        Gossipsub, GossipsubConfigBuilder, GossipsubEvent, IdentTopic, MessageAuthenticity,
     },
     identity::Keypair,
     swarm::SwarmEvent,
@@ -25,11 +25,16 @@ impl Plugin for NetworkPlugin {
 }
 
 pub struct NetworkManager {
+    local_peer_id: PeerId,
     command_tx: libp2p::futures::channel::mpsc::UnboundedSender<NetworkCommand>,
     event_rx: Mutex<std::sync::mpsc::Receiver<NetworkEvent>>,
 }
 
 impl NetworkManager {
+    pub fn local_peer_id(&self) -> PeerId {
+        self.local_peer_id
+    }
+
     pub fn listen_on(
         &mut self,
         addr: NetworkAddress,
@@ -49,9 +54,15 @@ impl NetworkManager {
             .unwrap();
     }
 
-    pub fn dial(&mut self, addr: NetworkAddress) {
+    pub fn dial_addr(&mut self, addr: NetworkAddress) {
         self.command_tx
-            .unbounded_send(NetworkCommand::Dial(addr))
+            .unbounded_send(NetworkCommand::DialAddr(addr))
+            .unwrap();
+    }
+
+    pub fn dial_peer(&mut self, peer_id: PeerId) {
+        self.command_tx
+            .unbounded_send(NetworkCommand::DialPeer(peer_id))
             .unwrap();
     }
 
@@ -76,6 +87,8 @@ impl NetworkManager {
 
 impl FromWorld for NetworkManager {
     fn from_world(world: &mut World) -> Self {
+        let local_key = Keypair::generate_ed25519();
+        let local_peer_id = PeerId::from_public_key(local_key.public());
         let (command_tx, mut command_rx) =
             libp2p::futures::channel::mpsc::unbounded::<NetworkCommand>();
         let (event_tx, event_rx) =
@@ -85,7 +98,7 @@ impl FromWorld for NetworkManager {
         let io_task_pool = world.get_resource::<IoTaskPool>().unwrap();
         io_task_pool
             .spawn(async move {
-                let mut swarm = create_network_swarm();
+                let mut swarm = create_network_swarm(local_key, local_peer_id);
 
                 loop {
                     select! {
@@ -99,6 +112,7 @@ impl FromWorld for NetworkManager {
         block_on(poll_fn(|context| command_tx.poll_ready(context))).unwrap();
 
         Self {
+            local_peer_id,
             command_tx,
             event_rx,
         }
@@ -115,15 +129,14 @@ enum NetworkCommand {
         oneshot::Sender<Result<ListenerId, TransportError<std::io::Error>>>,
     ),
     RemoveListener(ListenerId),
-    Dial(NetworkAddress),
+    DialAddr(NetworkAddress),
+    DialPeer(PeerId),
     Subscribe(NetworkTopic),
     Unsubscribe(NetworkTopic),
     Publish(NetworkTopic, Vec<u8>),
 }
 
-fn create_network_swarm() -> Swarm<Gossipsub> {
-    let local_key = Keypair::generate_ed25519();
-    let local_peer_id = PeerId::from_public_key(local_key.public());
+fn create_network_swarm(local_key: Keypair, local_peer_id: PeerId) -> Swarm<Gossipsub> {
     let transport = block_on(development_transport(local_key.clone())).unwrap();
     let gossipsub_config = GossipsubConfigBuilder::default().build().unwrap();
     let gossipsub: Gossipsub =
@@ -136,7 +149,8 @@ fn handle_network_command(swarm: &mut Swarm<Gossipsub>, command: NetworkCommand)
     match command {
         NetworkCommand::ListenOn(addr, sender) => sender.send(swarm.listen_on(addr)).unwrap(),
         NetworkCommand::RemoveListener(listener_id) => swarm.remove_listener(listener_id).unwrap(),
-        NetworkCommand::Dial(addr) => swarm.dial_addr(addr).unwrap(),
+        NetworkCommand::DialAddr(addr) => swarm.dial_addr(addr).unwrap(),
+        NetworkCommand::DialPeer(peer_id) => swarm.dial(&peer_id).unwrap(),
         NetworkCommand::Subscribe(topic) => {
             swarm.behaviour_mut().subscribe(&topic).map(|_| ()).unwrap()
         }
@@ -145,11 +159,12 @@ fn handle_network_command(swarm: &mut Swarm<Gossipsub>, command: NetworkCommand)
             .unsubscribe(&topic)
             .map(|_| ())
             .unwrap(),
-        NetworkCommand::Publish(topic, data) => swarm
-            .behaviour_mut()
-            .publish(topic, data)
-            .map(|_| ())
-            .unwrap(),
+        // TODO: Properly return result to caller
+        NetworkCommand::Publish(topic, data) => match swarm.behaviour_mut().publish(topic, data) {
+            Ok(_) => (),
+            Err(PublishError::InsufficientPeers) => (),
+            Err(error) => Err(error).unwrap(),
+        },
     };
 }
 

@@ -1,21 +1,21 @@
 use std::collections::HashMap;
 
-use libp2p::PeerId;
+use serde::{Deserialize, Serialize};
 
-use crate::player::Player;
+use crate::player::{Player, PlayerId};
 
+#[derive(Serialize, Deserialize)]
 pub struct Party {
-    pub players: [Option<Player>; 4],
-    pub peers: HashMap<PeerId, usize>,
-    pub host_index: usize,
+    pub players: HashMap<PlayerId, Player>,
+    pub host_id: PlayerId,
 }
 
 impl Party {
     pub fn new(host_player: Player) -> Self {
-        Self {
-            players: [Some(host_player), None, None, None],
-            peers: HashMap::new(),
-            host_index: 0,
-        }
+        let host_id = host_player.id;
+        let mut players = HashMap::new();
+        players.insert(host_player.id, host_player);
+
+        Self { players, host_id }
     }
 }
