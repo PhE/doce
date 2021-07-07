@@ -72,7 +72,7 @@ fn main() {
         .add_plugin(WorldInspectorPlugin::new())
         .add_plugin(PhysicsPlugin::<NoUserData>::default())
         .add_plugin(bevy::diagnostic::LogDiagnosticsPlugin {
-            wait_duration: Duration::from_secs(10),
+            wait_duration: Duration::from_secs(60),
             filter: Some(vec![
                 bevy::diagnostic::FrameTimeDiagnosticsPlugin::FRAME_TIME,
             ]),

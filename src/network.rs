@@ -1,16 +1,27 @@
-use std::sync::Mutex;
+use std::{
+    collections::VecDeque,
+    sync::mpsc as sync_mpsc,
+    sync::Mutex,
+    task::{Context, Poll},
+};
 
 use bevy::{prelude::*, tasks::IoTaskPool};
-use futures::{channel::oneshot, executor::block_on, future::poll_fn, prelude::*, select};
+use futures::{
+    channel::mpsc as async_mpsc, channel::oneshot, executor::block_on, future::poll_fn, prelude::*,
+    select,
+};
 pub use libp2p::{core::connection::ListenerId, PeerId, TransportError};
 use libp2p::{
     development_transport,
     gossipsub::{
-        error::{GossipsubHandlerError, PublishError},
-        Gossipsub, GossipsubConfigBuilder, GossipsubEvent, IdentTopic, MessageAuthenticity,
+        error::PublishError, Gossipsub, GossipsubConfigBuilder, GossipsubEvent, IdentTopic,
+        MessageAuthenticity,
     },
     identity::Keypair,
-    swarm::SwarmEvent,
+    swarm::{
+        IntoProtocolsHandler, NetworkBehaviourEventProcess, PollParameters, ProtocolsHandler,
+        SwarmEvent,
+    },
     Multiaddr, Swarm,
 };
 
@@ -24,10 +35,45 @@ impl Plugin for NetworkPlugin {
     }
 }
 
+#[derive(libp2p::NetworkBehaviour)]
+#[behaviour(out_event = "NetworkBehaviourEvent", poll_method = "poll")]
+pub struct NetworkBehaviour {
+    pub gossipsub: Gossipsub,
+    #[behaviour(ignore)]
+    events: VecDeque<NetworkBehaviourAction>,
+}
+
+impl NetworkBehaviour {
+    fn poll(
+        &mut self,
+        _: &mut Context<'_>,
+        _: &mut impl PollParameters,
+    ) -> Poll<NetworkBehaviourAction> {
+        if let Some(event) = self.events.pop_front() {
+            return Poll::Ready(event);
+        }
+
+        Poll::Pending
+    }
+}
+
+impl NetworkBehaviourEventProcess<GossipsubEvent> for NetworkBehaviour {
+    fn inject_event(&mut self, event: GossipsubEvent) {
+        self.events.push_back(NetworkBehaviourAction::GenerateEvent(
+            NetworkBehaviourEvent::Gossipsub(event),
+        ));
+    }
+}
+
+#[derive(Debug)]
+pub enum NetworkBehaviourEvent {
+    Gossipsub(GossipsubEvent),
+}
+
 pub struct NetworkManager {
     local_peer_id: PeerId,
-    command_tx: libp2p::futures::channel::mpsc::UnboundedSender<NetworkCommand>,
-    event_rx: Mutex<std::sync::mpsc::Receiver<NetworkEvent>>,
+    command_tx: async_mpsc::UnboundedSender<NetworkCommand>,
+    event_rx: Mutex<sync_mpsc::Receiver<NetworkEvent>>,
 }
 
 impl NetworkManager {
@@ -89,10 +135,8 @@ impl FromWorld for NetworkManager {
     fn from_world(world: &mut World) -> Self {
         let local_key = Keypair::generate_ed25519();
         let local_peer_id = PeerId::from_public_key(local_key.public());
-        let (command_tx, mut command_rx) =
-            libp2p::futures::channel::mpsc::unbounded::<NetworkCommand>();
-        let (event_tx, event_rx) =
-            std::sync::mpsc::channel::<SwarmEvent<GossipsubEvent, GossipsubHandlerError>>();
+        let (command_tx, mut command_rx) = async_mpsc::unbounded::<NetworkCommand>();
+        let (event_tx, event_rx) = sync_mpsc::channel::<NetworkEvent>();
         let event_rx = Mutex::new(event_rx);
 
         let io_task_pool = world.get_resource::<IoTaskPool>().unwrap();
@@ -103,7 +147,10 @@ impl FromWorld for NetworkManager {
                 loop {
                     select! {
                         command = command_rx.select_next_some() => handle_network_command(&mut swarm, command),
-                        event = swarm.next_event().fuse() => event_tx.send(event).unwrap(),
+                        event = swarm.next_event().fuse() => {
+                            // handle_network_event(&mut swarm, &event);
+                            event_tx.send(event).unwrap();
+                        }
                     }
                 }
             })
@@ -120,8 +167,16 @@ impl FromWorld for NetworkManager {
 }
 
 pub type NetworkAddress = Multiaddr;
-pub type NetworkEvent = SwarmEvent<GossipsubEvent, GossipsubHandlerError>;
+pub type NetworkEvent =
+    SwarmEvent<
+        <NetworkBehaviour as libp2p::swarm::NetworkBehaviour>::OutEvent,
+        <<<NetworkBehaviour as libp2p::swarm::NetworkBehaviour>::ProtocolsHandler as IntoProtocolsHandler>::Handler as ProtocolsHandler>::Error
+    >;
 pub type NetworkTopic = IdentTopic;
+type NetworkBehaviourAction = libp2p::swarm::NetworkBehaviourAction<
+    <<<NetworkBehaviour as libp2p::swarm::NetworkBehaviour>::ProtocolsHandler as IntoProtocolsHandler>::Handler as ProtocolsHandler>::InEvent,
+    <NetworkBehaviour as libp2p::swarm::NetworkBehaviour>::OutEvent
+>;
 
 enum NetworkCommand {
     ListenOn(
@@ -136,35 +191,45 @@ enum NetworkCommand {
     Publish(NetworkTopic, Vec<u8>),
 }
 
-fn create_network_swarm(local_key: Keypair, local_peer_id: PeerId) -> Swarm<Gossipsub> {
+fn create_network_swarm(local_key: Keypair, local_peer_id: PeerId) -> Swarm<NetworkBehaviour> {
     let transport = block_on(development_transport(local_key.clone())).unwrap();
     let gossipsub_config = GossipsubConfigBuilder::default().build().unwrap();
     let gossipsub: Gossipsub =
         Gossipsub::new(MessageAuthenticity::Signed(local_key), gossipsub_config).unwrap();
+    let behaviour = NetworkBehaviour {
+        gossipsub,
+        events: VecDeque::new(),
+    };
 
-    Swarm::new(transport, gossipsub, local_peer_id)
+    Swarm::new(transport, behaviour, local_peer_id)
 }
 
-fn handle_network_command(swarm: &mut Swarm<Gossipsub>, command: NetworkCommand) {
+fn handle_network_command(swarm: &mut Swarm<NetworkBehaviour>, command: NetworkCommand) {
     match command {
         NetworkCommand::ListenOn(addr, sender) => sender.send(swarm.listen_on(addr)).unwrap(),
         NetworkCommand::RemoveListener(listener_id) => swarm.remove_listener(listener_id).unwrap(),
         NetworkCommand::DialAddr(addr) => swarm.dial_addr(addr).unwrap(),
         NetworkCommand::DialPeer(peer_id) => swarm.dial(&peer_id).unwrap(),
-        NetworkCommand::Subscribe(topic) => {
-            swarm.behaviour_mut().subscribe(&topic).map(|_| ()).unwrap()
-        }
+        NetworkCommand::Subscribe(topic) => swarm
+            .behaviour_mut()
+            .gossipsub
+            .subscribe(&topic)
+            .map(|_| ())
+            .unwrap(),
         NetworkCommand::Unsubscribe(topic) => swarm
             .behaviour_mut()
+            .gossipsub
             .unsubscribe(&topic)
             .map(|_| ())
             .unwrap(),
         // TODO: Properly return result to caller
-        NetworkCommand::Publish(topic, data) => match swarm.behaviour_mut().publish(topic, data) {
-            Ok(_) => (),
-            Err(PublishError::InsufficientPeers) => (),
-            Err(error) => Err(error).unwrap(),
-        },
+        NetworkCommand::Publish(topic, data) => {
+            match swarm.behaviour_mut().gossipsub.publish(topic, data) {
+                Ok(_) => (),
+                Err(PublishError::InsufficientPeers) => (),
+                Err(error) => Err(error).unwrap(),
+            }
+        }
     };
 }
 

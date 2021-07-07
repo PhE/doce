@@ -9,7 +9,7 @@ use libp2p::gossipsub::GossipsubEvent;
 
 use crate::{
     cleanup::CleanupConfig,
-    network::{NetworkEvent, NetworkManager, NetworkTopic},
+    network::{NetworkBehaviourEvent, NetworkEvent, NetworkManager, NetworkTopic},
     party::Party,
     player::{Player, PlayerId},
 };
@@ -87,22 +87,16 @@ fn handle_join_lobby_events(
                 cleanup_config.next_state_after_cleanup = Some(AppState::MainMenu);
                 app_state.set(AppState::Cleanup).unwrap();
             }
-            NetworkEvent::Behaviour(GossipsubEvent::Message { message, .. }) => {
+            NetworkEvent::Behaviour(NetworkBehaviourEvent::Gossipsub(
+                GossipsubEvent::Message { message, .. },
+            )) => {
                 if NetworkTopic::new("join_accepted").hash() == message.topic {
                     match serde_json::from_slice::<'_, Party>(&message.data) {
                         Ok(new_party) => {
                             let host_id = party.host_id;
                             let player = party.players.remove(&host_id).unwrap();
                             *party = new_party;
-
-                            for &player_id in party.players.keys() {
-                                if player_id != party.host_id {
-                                    network_manager.dial_peer(player_id.into());
-                                }
-                            }
-
                             party.players.insert(player.id, player);
-
                             network_manager.unsubscribe(NetworkTopic::new("join_accepted"));
                             network_manager.unsubscribe(NetworkTopic::new("join_rejected"));
                             network_manager.subscribe(NetworkTopic::new("joined"));
@@ -255,16 +249,17 @@ fn handle_host_events(
     }
 
     for event in network_events.iter() {
-        if let NetworkEvent::Behaviour(GossipsubEvent::Message { message, .. }) = event {
+        if let NetworkEvent::Behaviour(NetworkBehaviourEvent::Gossipsub(
+            GossipsubEvent::Message { message, .. },
+        )) = event
+        {
             if NetworkTopic::new("join_request").hash() == message.topic {
                 match serde_json::from_slice::<'_, Player>(&message.data) {
                     Ok(player) => {
-                        network_manager.publish(
-                            NetworkTopic::new("join_accepted"),
-                            serde_json::to_vec(party.deref()).unwrap(),
-                        );
-                        network_manager.publish(NetworkTopic::new("joined"), message.data.clone());
+                        let party_json = serde_json::to_vec(party.deref()).unwrap();
                         party.players.insert(player.id, player);
+                        network_manager.publish(NetworkTopic::new("join_accepted"), party_json);
+                        network_manager.publish(NetworkTopic::new("joined"), message.data.clone());
                     }
                     Err(error) => {
                         let error =
@@ -280,7 +275,7 @@ fn handle_host_events(
 
 fn handle_client_events(
     mut party: ResMut<Party>,
-    mut network_manager: ResMut<NetworkManager>,
+    network_manager: Res<NetworkManager>,
     mut network_events: EventReader<NetworkEvent>,
 ) {
     if party.host_id == network_manager.local_peer_id().into() {
@@ -289,11 +284,12 @@ fn handle_client_events(
 
     for event in network_events.iter() {
         match event {
-            NetworkEvent::Behaviour(GossipsubEvent::Message { message, .. }) => {
+            NetworkEvent::Behaviour(NetworkBehaviourEvent::Gossipsub(
+                GossipsubEvent::Message { message, .. },
+            )) => {
                 if NetworkTopic::new("joined").hash() == message.topic {
                     match serde_json::from_slice::<'_, Player>(&message.data) {
                         Ok(player) => {
-                            network_manager.dial_peer(player.id.into());
                             party.players.insert(player.id, player);
                         }
                         Err(error) => {
@@ -317,7 +313,10 @@ fn receive_chat_messages(
     mut network_events: EventReader<NetworkEvent>,
 ) {
     for event in network_events.iter() {
-        if let NetworkEvent::Behaviour(GossipsubEvent::Message { message, .. }) = event {
+        if let NetworkEvent::Behaviour(NetworkBehaviourEvent::Gossipsub(
+            GossipsubEvent::Message { message, .. },
+        )) = event
+        {
             if NetworkTopic::new("chat").hash() == message.topic {
                 if let Some(player) = party.players.get(&message.source.unwrap().into()) {
                     lobby_ui.chat_messages.push(LobbyChatMessage {
