@@ -1,5 +1,5 @@
 use bevy::{app::AppExit, prelude::*};
-use bevy_inspector_egui::{Inspectable, InspectorPlugin};
+use bevy_egui::{egui, EguiContext};
 use fake::{faker, Fake};
 
 use crate::{
@@ -15,30 +15,44 @@ pub struct MainMenuPlugin;
 
 impl Plugin for MainMenuPlugin {
     fn build(&self, app: &mut AppBuilder) {
-        app.insert_resource(MainMenuState {
-            player_name: faker::name::en::Name().fake(),
-            party_address: "".into(),
-        })
-        .add_plugin(InspectorPlugin::<MainMenuState>::new_insert_manually())
-        .add_system_set(SystemSet::on_enter(AppState::MainMenu).with_system(menu_setup.system()))
-        .add_system_set(
-            SystemSet::on_update(AppState::MainMenu)
-                .with_system(update_join_lobby_button.system().before("menu_update"))
-                .with_system(menu_update.system().label("menu_update")),
-        );
+        app.insert_resource(MainMenuState::default())
+            .add_system_set(
+                SystemSet::on_enter(AppState::MainMenu).with_system(menu_setup.system()),
+            )
+            .add_system_set(
+                SystemSet::on_update(AppState::MainMenu)
+                    .with_system(main_menu_dialog.system().before("menu_update"))
+                    .with_system(menu_update.system().label("menu_update")),
+            );
     }
 }
 
-#[derive(Inspectable)]
 struct MainMenuState {
+    current_dialog: Option<MainMenuDialog>,
     player_name: String,
     party_address: String,
+}
+
+impl Default for MainMenuState {
+    fn default() -> Self {
+        Self {
+            current_dialog: None,
+            player_name: faker::name::en::Name().fake(),
+            party_address: "".into(),
+        }
+    }
 }
 
 enum MainMenuButton {
     CreateLobby,
     JoinLobby,
+    ChangeName,
     Quit,
+}
+
+enum MainMenuDialog {
+    JoinLobby,
+    ChangeName,
 }
 
 fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
@@ -46,7 +60,12 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
 
     let button_bundle = ButtonBundle {
         style: Style {
-            size: Size::new(Val::Px(200.0), Val::Px(60.0)),
+            padding: Rect {
+                top: Val::Px(5.0),
+                bottom: Val::Px(5.0),
+                left: Val::Px(10.0),
+                right: Val::Px(10.0),
+            },
             margin: Rect::all(Val::Px(10.0)),
             justify_content: JustifyContent::Center,
             align_items: AlignItems::Center,
@@ -55,159 +74,208 @@ fn menu_setup(mut commands: Commands, ui_resources: Res<UIResources>) {
         ..Default::default()
     };
 
+    let create_button =
+        |parent: &mut ChildBuilder, button_type: MainMenuButton, button_name: &str| {
+            parent
+                .spawn_bundle(button_bundle.clone())
+                .insert(button_type)
+                .with_children(|parent| {
+                    parent.spawn_bundle(TextBundle {
+                        text: Text::with_section(
+                            button_name,
+                            TextStyle {
+                                font: ui_resources.font.clone(),
+                                font_size: 64.0,
+                                color: Color::BLACK,
+                            },
+                            Default::default(),
+                        ),
+                        ..Default::default()
+                    });
+                });
+        };
+
     commands
         .spawn_bundle(NodeBundle {
             style: Style {
-                size: Size::new(Val::Percent(100.0), Val::Percent(100.0)),
+                margin: Rect::all(Val::Auto),
                 flex_direction: FlexDirection::ColumnReverse,
                 justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
+                align_items: AlignItems::Stretch,
                 ..Default::default()
             },
             material: ui_resources.transparent.clone(),
             ..Default::default()
         })
         .with_children(|parent| {
-            parent
-                .spawn_bundle(button_bundle.clone())
-                .insert(MainMenuButton::CreateLobby)
-                .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
-                            "Create Lobby",
-                            TextStyle {
-                                font: ui_resources.font.clone(),
-                                font_size: 40.0,
-                                color: Color::BLACK,
-                            },
-                            Default::default(),
-                        ),
-                        ..Default::default()
-                    });
-                });
-
-            parent
-                .spawn_bundle(button_bundle.clone())
-                .insert(MainMenuButton::JoinLobby)
-                .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
-                            "Join Lobby",
-                            TextStyle {
-                                font: ui_resources.font.clone(),
-                                font_size: 40.0,
-                                color: Color::BLACK,
-                            },
-                            Default::default(),
-                        ),
-                        ..Default::default()
-                    });
-                });
-
-            parent
-                .spawn_bundle(button_bundle.clone())
-                .insert(MainMenuButton::Quit)
-                .with_children(|parent| {
-                    parent.spawn_bundle(TextBundle {
-                        text: Text::with_section(
-                            "Quit",
-                            TextStyle {
-                                font: ui_resources.font.clone(),
-                                font_size: 40.0,
-                                color: Color::BLACK,
-                            },
-                            Default::default(),
-                        ),
-                        ..Default::default()
-                    });
-                });
+            create_button(parent, MainMenuButton::CreateLobby, "Create Lobby");
+            create_button(parent, MainMenuButton::JoinLobby, "Join Lobby");
+            create_button(parent, MainMenuButton::ChangeName, "Change Name");
+            create_button(parent, MainMenuButton::Quit, "Quit");
         });
-}
-
-fn update_join_lobby_button(
-    main_menu_state: Res<MainMenuState>,
-    mut text_query: Query<&mut Text>,
-    query: Query<(&MainMenuButton, &Children, &mut Style)>,
-) {
-    query.for_each_mut(|(button, children, mut style)| {
-        if let MainMenuButton::JoinLobby = button {
-            let is_visible = !main_menu_state.party_address.is_empty()
-                && main_menu_state
-                    .party_address
-                    .parse::<NetworkAddress>()
-                    .is_ok();
-
-            style.display = if is_visible {
-                Display::Flex
-            } else {
-                Display::None
-            };
-
-            for child in children.iter() {
-                let mut text = text_query.get_mut(*child).unwrap();
-
-                for section in &mut text.sections {
-                    section
-                        .style
-                        .color
-                        .set_a(if is_visible { 1.0 } else { 0.0 });
-                }
-            }
-        }
-    });
 }
 
 fn menu_update(
     mut commands: Commands,
-    main_menu_state: Res<MainMenuState>,
+    mut main_menu_state: ResMut<MainMenuState>,
     mut network_manager: ResMut<NetworkManager>,
-    mut state: ResMut<State<AppState>>,
+    mut app_state: ResMut<State<AppState>>,
     mut app_exit_events: EventWriter<AppExit>,
     mut cleanup_config: ResMut<CleanupConfig>,
     query: Query<(&Interaction, &MainMenuButton), (Changed<Interaction>, With<Button>)>,
 ) {
+    if main_menu_state.current_dialog.is_some() {
+        return;
+    }
+
     for (interaction, button) in query.iter() {
-        match interaction {
-            Interaction::Clicked => {
-                match button {
-                    MainMenuButton::CreateLobby => {
-                        let player = Player {
-                            id: PlayerId::new(network_manager.local_peer_id()),
-                            name: main_menu_state.player_name.clone(),
-                        };
-
-                        commands.insert_resource(Party::new(player));
-
-                        network_manager
-                            .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
-                            .unwrap();
-                        network_manager.subscribe(NetworkTopic::new("join_request"));
-
-                        cleanup_config.next_state_after_cleanup = Some(AppState::InLobby);
-                        state.set(AppState::Cleanup).unwrap();
-                    }
-                    MainMenuButton::JoinLobby => {
-                        let player = Player {
-                            id: PlayerId::new(network_manager.local_peer_id()),
-                            name: main_menu_state.player_name.clone(),
-                        };
-
-                        commands.insert_resource(Party::new(player));
-
-                        network_manager
-                            .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
-                            .unwrap();
-                        network_manager.subscribe(NetworkTopic::new("join_accepted"));
-                        network_manager.subscribe(NetworkTopic::new("join_rejected"));
-                        network_manager.dial_addr(main_menu_state.party_address.parse().unwrap());
-
-                        cleanup_config.next_state_after_cleanup = Some(AppState::JoiningLobby);
-                        state.set(AppState::Cleanup).unwrap();
-                    }
-                    MainMenuButton::Quit => app_exit_events.send(AppExit),
-                };
-            }
-            _ => (),
+        if let Interaction::Clicked = interaction {
+            match button {
+                MainMenuButton::CreateLobby => {
+                    create_lobby(
+                        &mut commands,
+                        &mut network_manager,
+                        &mut app_state,
+                        &mut cleanup_config,
+                        main_menu_state.player_name.clone(),
+                    );
+                }
+                MainMenuButton::JoinLobby => {
+                    main_menu_state.current_dialog = Some(MainMenuDialog::JoinLobby);
+                }
+                MainMenuButton::ChangeName => {
+                    main_menu_state.current_dialog = Some(MainMenuDialog::ChangeName);
+                }
+                MainMenuButton::Quit => app_exit_events.send(AppExit),
+            };
         }
     }
+}
+
+fn main_menu_dialog(
+    mut commands: Commands,
+    egui_context: Res<EguiContext>,
+    mut main_menu_state: ResMut<MainMenuState>,
+    mut network_manager: ResMut<NetworkManager>,
+    mut app_state: ResMut<State<AppState>>,
+    mut cleanup_config: ResMut<CleanupConfig>,
+) {
+    let mut close_dialog = false;
+
+    match main_menu_state.current_dialog {
+        Some(MainMenuDialog::JoinLobby) => {
+            egui::Window::new("Join Lobby")
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .collapsible(false)
+                .resizable(false)
+                .show(egui_context.ctx(), |ui| {
+                    let mut join = false;
+
+                    ui.horizontal(|ui| {
+                        ui.label("Address:");
+
+                        let text_edit_lost_focus = ui
+                            .text_edit_singleline(&mut main_menu_state.party_address)
+                            .lost_focus();
+
+                        join = text_edit_lost_focus && ui.input().key_pressed(egui::Key::Enter);
+                    });
+
+                    ui.horizontal(|ui| {
+                        ui.scope(|ui| {
+                            let address = main_menu_state.party_address.parse();
+                            let address_is_valid =
+                                !main_menu_state.party_address.is_empty() && address.is_ok();
+
+                            ui.set_enabled(address_is_valid);
+
+                            let button_clicked = ui.button("Join").clicked();
+
+                            if address_is_valid && (button_clicked || join) {
+                                join_lobby(
+                                    &mut commands,
+                                    &mut network_manager,
+                                    &mut app_state,
+                                    &mut cleanup_config,
+                                    main_menu_state.player_name.clone(),
+                                    address.unwrap(),
+                                );
+                            }
+                        });
+
+                        close_dialog = ui.button("Cancel").clicked();
+                    });
+                });
+        }
+        Some(MainMenuDialog::ChangeName) => {
+            egui::Window::new("Change Name")
+                .anchor(egui::Align2::CENTER_CENTER, egui::Vec2::ZERO)
+                .collapsible(false)
+                .resizable(false)
+                .show(egui_context.ctx(), |ui| {
+                    let text_edit_lost_focus = ui
+                        .text_edit_singleline(&mut main_menu_state.player_name)
+                        .lost_focus();
+
+                    let button_clicked = ui.button("Confirm").clicked();
+
+                    close_dialog = button_clicked
+                        || text_edit_lost_focus && ui.input().key_pressed(egui::Key::Enter);
+                });
+        }
+        None => (),
+    };
+
+    if close_dialog {
+        main_menu_state.current_dialog = None;
+    }
+}
+
+fn create_lobby(
+    commands: &mut Commands,
+    network_manager: &mut ResMut<NetworkManager>,
+    app_state: &mut ResMut<State<AppState>>,
+    cleanup_config: &mut ResMut<CleanupConfig>,
+    player_name: String,
+) {
+    let player = Player {
+        id: PlayerId::new(network_manager.local_peer_id()),
+        name: player_name,
+    };
+
+    commands.insert_resource(Party::new(player));
+
+    network_manager
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
+    network_manager.subscribe(NetworkTopic::new("join_request"));
+
+    cleanup_config.next_state_after_cleanup = Some(AppState::InLobby);
+    app_state.set(AppState::Cleanup).unwrap();
+}
+
+fn join_lobby(
+    commands: &mut Commands,
+    network_manager: &mut ResMut<NetworkManager>,
+    app_state: &mut ResMut<State<AppState>>,
+    cleanup_config: &mut ResMut<CleanupConfig>,
+    player_name: String,
+    address: NetworkAddress,
+) {
+    let player = Player {
+        id: PlayerId::new(network_manager.local_peer_id()),
+        name: player_name,
+    };
+
+    commands.insert_resource(Party::new(player));
+
+    network_manager
+        .listen_on("/ip4/0.0.0.0/tcp/0".parse().unwrap())
+        .unwrap();
+    network_manager.subscribe(NetworkTopic::new("join_accepted"));
+    network_manager.subscribe(NetworkTopic::new("join_rejected"));
+    network_manager.dial_addr(address);
+
+    cleanup_config.next_state_after_cleanup = Some(AppState::JoiningLobby);
+    app_state.set(AppState::Cleanup).unwrap();
 }
